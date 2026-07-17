@@ -1,0 +1,96 @@
+# project-index
+Quick reference — read this before working on the project to avoid scanning every file.
+
+## Blocks & BlockEntities (ModBlocks.java / ModBlockEntities.java)
+| Block ID           | Class               | BlockEntity               | Tier/Notes                   |
+|--------------------|---------------------|---------------------------|------------------------------|
+| controller_t1      | ControllerBlock(1)  | ControllerBlockEntity     | 25-block scan radius         |
+| controller_t2      | ControllerBlock(2)  | ControllerBlockEntity     | 50-block scan radius         |
+| controller_t3      | ControllerBlock(3)  | ControllerBlockEntity     | 100-block scan radius        |
+| controller_t4      | ControllerBlock(4)  | ControllerBlockEntity     | 200-block scan radius        |
+| machine_soul       | MachineSoulBlock    | MachineSoulBlockEntity    | Multi-tab GUI, complex state |
+| commander          | CommanderBlock      | CommanderBlockEntity      | Filter + alliance key        |
+| cartridge_collector| CartridgeCollectorBlock | CartridgeCollectorBlockEntity | Item output only    |
+
+Note: T1–T4 share ONE BlockEntityType (ModBlockEntities.CONTROLLER). Tier is read from block state via ControllerBlock.getTier().
+
+## Menus & Screens (ModMenus.java / client/)
+| MenuType key          | Menu class              | Screen class              |
+|-----------------------|-------------------------|---------------------------|
+| controller_menu       | ControllerMenu          | ControllerScreen          |
+| commander_menu        | CommanderMenu           | CommanderScreen           |
+| machine_soul_menu     | MachineSoulMenu         | MachineSoulScreen (legacy)|
+| machine_soul_home     | MachineSoulHomeMenu     | MachineSoulHomeScreen     |
+| machine_soul_vision   | MachineSoulVisionMenu   | MachineSoulVisionScreen   |
+| machine_soul_move     | MachineSoulMoveMenu     | MachineSoulMoveScreen     |
+| machine_soul_action   | MachineSoulActionMenu   | MachineSoulActionScreen   |
+| machine_soul_target   | MachineSoulTargetMenu   | MachineSoulTargetScreen   |
+
+BaseMachineSoulScreen = shared base for all MachineSoul screens.
+Other client-only sub-screens/overlays: CommanderFilterScreen, CommanderWhitelistScreen, PlayerWhitelistScreen, TargetFilterScreen, MachineSoulPlayerFilterScreen, MachineSoulTargetFilterScreen, FireFrequencyScreen.
+
+## Network packets (ModPackets.java)
+Direction client→server (Registered in ModPackets):
+- ToggleActivePacket
+- UpdateFilterPacket
+- UpdateWhitelistPacket
+- ToggleRotationAxisPacket
+- SetFireFrequencyPacket
+- ToggleCommanderPacket
+- UpdateCommanderFilterPacket
+- UpdateCommanderWhitelistPacket
+- UpdateCommanderKeyPacket
+- SaveMachineSoulConfigPacket
+- ToggleMachineSoulSearchPacket
+- ToggleMachineSoulSubLevelOnlyPacket
+- ToggleMachineSoulTargetPlayersPacket
+- SwitchMachineSoulTabPacket
+- GoHomeMachineSoulPacket
+- SaveMachineSoulVisionPacket
+- SaveMachineSoulMovePacket
+- SaveMachineSoulActionPacket
+- UpdateMachineSoulPlayerFilterPacket
+- UpdateMachineSoulCommanderFilterPacket
+
+Direction server→client (Registered in ModPackets):
+- SyncWhitelistPacket
+- SyncCommanderDataPacket
+- SyncMachineSoulStatusPacket
+- SyncMachineSoulPlayerFilterPacket
+- SyncMachineSoulCommanderFilterPacket
+
+Unregistered / Legacy / Helper records (In network/ package but not registered in ModPackets):
+- AssignMachineSoulSlotPacket (Unused, logic replaced by SaveMachineSoulMovePacket/SaveMachineSoulActionPacket)
+- OpenMachineSoulGuiPacket (Client/Server helper, triggers OpenMachineSoulHomePacket.openFor)
+- OpenMachineSoulHomePacket (Helper record, uses player.openMenu to open the home screen on the server)
+
+Packet pattern: record implementing CustomPacketPayload, static TYPE (CustomPacketPayload.Type) + CODEC (StreamCodec), static handle() method.
+
+## Capabilities (CapabilityProvider.java)
+- CONTROLLER: exposes IItemHandler (Capabilities.ItemHandler.BLOCK) via be.getInventory()
+- CARTRIDGE_COLLECTOR: exposes read-only IItemHandler (extract only, no insert) for collecting createbigcannons cartridges
+- Uses RegisterCapabilitiesEvent — NOT ICapabilityProvider / @AttachCapabilitiesEvent
+
+## Compat (compat/)
+- SableCompat.java: Sable aeronautics sublevel integration for coordinates translation in physics structures
+
+## Config
+- CBCAutoTargetConfig.java — NeoForge server config (ModConfig.Type.SERVER)
+  Config fields: scan_interval_ticks, max_sim_ticks, muzzle_speed_blocks_per_tick, default_gravity, default_drag, barrel_length, max_raycast_candidates
+- Registered in CBCAutoTarget constructor via modContainer.registerConfig()
+
+## Utilities (util/)
+- BallisticSolver.java — ballistic trajectory math using Brent's method solver
+- LineOfSightUtil.java — Line of sight checks helper
+- ShipAimSolver.java — Create Aeronautics ship aiming coordinate conversion calculations
+
+## Lang files — 20 locales
+cs_cz de_de en_us es_es fr_fr hu_hu id_id it_it ja_jp ko_kr nl_nl pl_pl pt_br ru_ru sv_se th_th tr_tr uk_ua vi_vn zh_cn
+Source of truth: en_us.json. All others use "<EN> [needs translation]" placeholder for new keys.
+
+## Important SafeNbtWriter registrations (CBCAutoTarget.commonSetup)
+COMMANDER, MACHINE_SOUL, CONTROLLER all registered with Create's SafeNbtWriterRegistry.
+Do not remove or move these — required for schematic deploy to preserve BE state.
+
+## Entity Tags & Datapacks
+- `cbc_autotarget:targeted_entities` (tag file: `data/cbc_autotarget/tags/entity_type/targeted_entities.json`) contains entity types targetable by the auto-target system. For specific modded mobs, they can be added to this tag via a data pack without recompiling the mod.

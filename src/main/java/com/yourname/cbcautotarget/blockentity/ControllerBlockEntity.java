@@ -470,7 +470,11 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 mainLevel.getEntitiesOfClass(LivingEntity.class, worldBox,
                         e -> e.isAlive() && filterData.isAllowed(e)
                                 && !filterData.isNearAlly(e, mainLevel)));
-        candidates.sort(Comparator.comparingDouble(e -> e.distanceToSqr(worldCenter)));
+        Comparator<Entity> byThreatThenDistance = Comparator
+                .comparingInt((Entity e) -> filterData.isPriorityThreat(e) ? 0 : 1)
+                .thenComparingDouble(e -> e.distanceToSqr(worldCenter));
+
+        candidates.sort(byThreatThenDistance);
 
         int maxChecks = CBCAutoTargetConfig.MAX_RAYCAST_CANDIDATES.get();
         List<Entity> toCheck = candidates.size() > maxChecks

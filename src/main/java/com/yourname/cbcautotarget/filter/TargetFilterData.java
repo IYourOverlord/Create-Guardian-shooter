@@ -261,4 +261,19 @@ public class TargetFilterData {
                 hadMaskKey ? tag.getInt(NBT_MASK) : -1,
                 maskBefore, mask, whitelistEnabled, playerWhitelist.size());
     }
+    /**
+     * Возвращает true, если сущность — "настоящая" враждебная угроза:
+     * ванильный {@link Monster} или помечена тегом {@link CBCAutoTargetTags#TARGETED_ENTITIES}.
+     *
+     * В отличие от {@link #isAllowed(Entity)}, который просто проверяет попадание
+     * в категорию HOSTILE (в неё, помимо реальных монстров, попадают
+     * спровоцированные нейтралы вроде голема/пиглина и модовые мобы, прошедшие
+     * по fallback-эвристике ATTACK_DAMAGE > 0), этот метод нужен только для
+     * приоритезации цели внутри HOSTILE-категории: "настоящие" монстры должны
+     * перебивать по значимости более близких, но не собственно монстров.
+     */
+    public boolean isPriorityThreat(Entity entity) {
+        return entity instanceof Monster
+                || entity.getType().is(CBCAutoTargetTags.TARGETED_ENTITIES);
+    }
 }
