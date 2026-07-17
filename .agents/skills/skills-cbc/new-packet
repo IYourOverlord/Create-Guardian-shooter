@@ -1,0 +1,13 @@
+# new-packet
+Context:
+- Network: ModPackets.java with NeoForge SimpleChannel / PayloadRegistrar (1.21.1 style)
+- Packet base: implement CustomPacketPayload, use StreamCodec for serialization
+- Existing packets in network/ as reference: SaveMachineSoulConfigPacket, SyncMachineSoulStatusPacket, etc.
+- Client handler: ClientSetup.java; server handler: event subscriber in main mod class or dedicated handler
+
+Steps:
+1. Ask: "Packet name? Direction (client→server / server→client / bidirectional)? What data fields does it carry? What should happen on receipt?"
+2. Generate packet record implementing CustomPacketPayload with TYPE + STREAM_CODEC constants.
+3. Generate handler method (static, correct dist check).
+4. Show registration line to add in ModPackets.java.
+5. Show all files labeled.

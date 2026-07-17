@@ -1,0 +1,12 @@
+{
+  "variants": {
+    "facing=north,active=false": { "model": "cbc_autotarget:block/controller",        "y": 180 },
+    "facing=south,active=false": { "model": "cbc_autotarget:block/controller",        "y": 0   },
+    "facing=east,active=false":  { "model": "cbc_autotarget:block/controller",        "y": 270 },
+    "facing=west,active=false":  { "model": "cbc_autotarget:block/controller",        "y": 90  },
+    "facing=north,active=true":  { "model": "cbc_autotarget:block/controller_active", "y": 180 },
+    "facing=south,active=true":  { "model": "cbc_autotarget:block/controller_active", "y": 0   },
+    "facing=east,active=true":   { "model": "cbc_autotarget:block/controller_active", "y": 270 },
+    "facing=west,active=true":   { "model": "cbc_autotarget:block/controller_active", "y": 90  }
+  }
+}

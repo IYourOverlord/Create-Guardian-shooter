@@ -1,0 +1,21 @@
+# new-block
+Context:
+- Loader: NeoForge 21.1.227, MC 1.21.1, Java 21
+- Mappings: Parchment 2025.12.20
+- mod_id: cbc_autotarget, group: com.yourname.cbcautotarget
+- Registration: ModBlocks.java (DeferredRegister), ModItems.java for BlockItem
+- Resources: src/main/resources/assets/cbc_autotarget/{blockstates,models/block,models/item,textures/block}
+- Lang: src/main/resources/assets/cbc_autotarget/lang/en_us.json (+ all other locales listed in project)
+- Loot tables: src/main/resources/data/cbc_autotarget/loot_tables/blocks/
+- Recipes: src/main/resources/data/cbc_autotarget/recipe/
+
+Steps:
+1. Ask: "Block ID (snake_case)? Hardness + resistance? Requires tool (pickaxe/axe/shovel/none)? Has BlockEntity? Creative tab (existing ModCreativeTab or new)?"
+2. Generate block class in block/ package. Use MapColor SoundType from existing blocks as reference.
+3. If BlockEntity needed — ask before generating: "BlockEntity ticker (client/server/both/none)? Needs menu/screen?"
+4. Register in ModBlocks via DeferredRegister<Block>.
+5. Register BlockItem in ModItems.
+6. Generate: blockstate JSON, block model JSON, item model JSON.
+7. Add loot table (self-drop by default).
+8. Add en_us.json entry only — remind user to propagate to other 19 lang files manually or ask if needed.
+9. Show all files labeled: // File: src/main/java/...

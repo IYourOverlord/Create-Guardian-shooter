@@ -1,0 +1,13 @@
+# update-lang
+Context:
+- Lang files: src/main/resources/assets/cbc_autotarget/lang/
+- 20 locales: cs_cz de_de en_us es_es fr_fr hu_hu id_id it_it ja_jp ko_kr nl_nl pl_pl pt_br ru_ru sv_se th_th tr_tr uk_ua vi_vn zh_cn
+- en_us.json is source of truth
+- Duplicate lang source also exists in src/main/java/.../lang/ — keep both in sync
+
+Steps:
+1. Ask: "New key(s) and English value(s)? Or paste the en_us entries to propagate."
+2. Add entries to en_us.json.
+3. Add same key to all 19 other lang files with value: "<EN_VALUE> [needs translation]" as placeholder.
+4. Remind user: replace placeholders with real translations before release.
+5. Show diff for en_us.json in full, other files as a single representative diff with note "same change applied to all 19 files."

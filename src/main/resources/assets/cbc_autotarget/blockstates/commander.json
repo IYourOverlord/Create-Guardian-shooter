@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "cbc_autotarget:block/commander" }
+  }
+}

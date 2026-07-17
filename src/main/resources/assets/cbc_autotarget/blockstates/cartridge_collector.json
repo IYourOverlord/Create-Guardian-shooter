@@ -1,0 +1,6 @@
+{
+  "variants": {
+    "enabled=false": { "model": "cbc_autotarget:block/cartridge_collector_empty" },
+    "enabled=true":  { "model": "cbc_autotarget:block/cartridge_collector_full"  }
+  }
+}

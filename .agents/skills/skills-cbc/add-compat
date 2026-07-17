@@ -1,0 +1,15 @@
+# add-compat
+Context:
+- Existing compat: SableCompat.java in compat/ package
+- Pattern: guard class load with ModList.get().isLoaded("mod_id"), use @OnlyIn or dist checks where needed
+- CBC classes: reside in libs/createbigcannons-*.jar (compileOnly)
+- Create classes: reside in libs/create-*.jar (compileOnly)
+- Aeronautics: libs/create-aeronautics-bundled-*.jar (compileOnly)
+
+Steps:
+1. Ask: "Which mod to integrate with? What functionality — event hook / data access / capability bridge / rendering?"
+2. Check if mod jar is already in libs/ — if not, remind user to add it before proceeding.
+3. Generate compat class in compat/ with isLoaded() guard.
+4. Show where to call the compat init (mod constructor or FMLCommonSetupEvent).
+5. Warn about any side-check requirements (client-only classes, dist-sensitive access).
+6. Show all files labeled.

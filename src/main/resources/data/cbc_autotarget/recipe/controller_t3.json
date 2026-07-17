@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "EPE",
+    "PAP",
+    "EPE"
+  ],
+  "key": {
+    "E": { "item": "minecraft:echo_shard" },
+    "P": { "item": "minecraft:prismarine_shard" },
+    "A": { "item": "cbc_autotarget:controller_t2" }
+  },
+  "result": {
+    "id": "cbc_autotarget:controller_t3",
+    "count": 1
+  }
+}

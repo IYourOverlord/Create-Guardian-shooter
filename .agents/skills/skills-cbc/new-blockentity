@@ -1,0 +1,15 @@
+# new-blockentity
+Context:
+- BlockEntities in blockentity/ package
+- Registration: ModBlockEntities.java (DeferredRegister<BlockEntityType>)
+- Ticker pattern: ServerLevelAccessor or use BlockEntityTicker<T> returned from getBlockEntityTicker()
+- Capability: CapabilityProvider.java pattern already in project — reuse if needed
+- Existing reference: MachineSoulBlockEntity (complex), CartridgeCollectorBlockEntity (simpler)
+
+Steps:
+1. Ask: "BlockEntity name? Needs ticker (server/client/both/none)? Expose capability (IItemHandler/IEnergyStorage/none)? Needs menu?"
+2. Generate BlockEntity class with saveAdditional / loadAdditional for NBT.
+3. If capability — wrap via CapabilityProvider pattern from existing code.
+4. Register in ModBlockEntities, link to block class via getBlockEntityType() override.
+5. If menu needed — trigger new-screen workflow steps inline.
+6. Show all files labeled.

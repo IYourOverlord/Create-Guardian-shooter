@@ -1,0 +1,17 @@
+# new-screen
+Context:
+- Screens in client/ package, extend AbstractContainerScreen or base class BaseMachineSoulScreen
+- Matching menu in menu/ package, extend AbstractContainerMenu
+- Registration: ModMenus.java (DeferredRegister<MenuType>)
+- Client-side registration: ClientSetup.java (MenuScreens.register)
+- Network: uses existing ModPackets pattern for server↔client sync
+- GUI textures: src/main/resources/assets/cbc_autotarget/textures/gui/
+
+Steps:
+1. Ask: "Screen name? Extend BaseMachineSoulScreen or AbstractContainerScreen directly? Has inventory slots? Texture file name?"
+2. Generate Menu class with correct ContainerData or custom data sync if needed.
+3. Generate Screen class with renderBg, renderLabels, init overrides.
+4. Register MenuType in ModMenus.
+5. Add MenuScreens.register call in ClientSetup.
+6. Generate empty texture placeholder path comment.
+7. Show all files labeled.

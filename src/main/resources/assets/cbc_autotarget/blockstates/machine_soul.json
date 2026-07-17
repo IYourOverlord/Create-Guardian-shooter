@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=south": { "model": "cbc_autotarget:block/machine_soul_model" },
+    "facing=north": { "model": "cbc_autotarget:block/machine_soul_model", "y": 180 },
+    "facing=east":  { "model": "cbc_autotarget:block/machine_soul_model", "y": 270 },
+    "facing=west":  { "model": "cbc_autotarget:block/machine_soul_model", "y": 90  }
+  }
+}

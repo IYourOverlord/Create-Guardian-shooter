@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "EPE",
+    "PAP",
+    "EPE"
+  ],
+  "key": {
+    "E": { "item": "minecraft:sculk_sensor" },
+    "P": { "item": "minecraft:prismarine_bricks" },
+    "A": { "item": "minecraft:amethyst_shard" }
+  },
+  "result": {
+    "id": "cbc_autotarget:commander",
+    "count": 1
+  }
+}

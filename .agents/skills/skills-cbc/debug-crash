@@ -1,0 +1,13 @@
+# debug-crash
+Context:
+- NeoForge 1.21.1 crash logs include NeoForge, FML, and mod stacking info
+- Common crash locations: registration (DeferredRegister fired too early/late), packet handling (wrong thread), BlockEntity NBT (missing key), capability (unregistered provider)
+- Logs at: run/logs/latest.log or run/crash-reports/
+
+Steps:
+1. If crash log not visible in context — ask: "Paste the full stack trace (from 'Caused by:' to end of first exception block)."
+2. Identify root cause from first `Caused by:` — ignore symptom lines above it.
+3. State root cause in one sentence.
+4. Check if crash is registration-timing, thread-safety, or NPE class — each has a different fix pattern.
+5. Show exact fix — changed lines only with ±3 lines context.
+6. If ambiguous — offer max 2 hypotheses with one-line trade-off each, ask which to pursue.

@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "SHS",
+    "HFH",
+    "SHS"
+  ],
+  "key": {
+    "S": { "item": "minecraft:slime_ball" },
+    "H": { "item": "minecraft:hopper" },
+    "F": { "item": "minecraft:pufferfish" }
+  },
+  "result": {
+    "id": "cbc_autotarget:cartridge_collector",
+    "count": 1
+  }
+}
