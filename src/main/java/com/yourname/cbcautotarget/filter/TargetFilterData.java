@@ -7,7 +7,9 @@ import net.minecraft.nbt.StringTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.entity.NeutralMob;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.Animal;
@@ -81,6 +83,16 @@ public class TargetFilterData {
             if (whitelistEnabled) return !playerWhitelist.contains(player.getGameProfile().getName());
             return true;
         }
+        // ── Нейтральные мобы (голем, пиглины, зомбифицированный пиглин и т.п.) ─
+        // Эти мобы часто зарегистрированы с MobCategory.MONSTER или наследуют
+        // Monster, но по геймплею атакуют только в ответ на провокацию.
+        // Если такой моб сейчас реально не агрессивен (нет цели атаки / не
+        // "зол"), считаем его мирным, а не враждебным.
+        if (entity.getType().is(CBCAutoTargetTags.NEUTRAL_ENTITIES)) {
+            boolean actuallyAggressive = isActuallyAggressive(entity);
+            return isEnabled(actuallyAggressive ? TargetCategory.HOSTILE : TargetCategory.PASSIVE);
+        }
+
         // ── Враждебные ───────────────────────────────────────────────────────
         // Monster покрывает большинство ванильных мобов. MobCategory.MONSTER —
         // более широкий признак враждебности на уровне EntityType: многие мобы
@@ -117,6 +129,33 @@ public class TargetFilterData {
             return isEnabled(looksHostile ? TargetCategory.HOSTILE : TargetCategory.PASSIVE);
         }
 
+        return false;
+    }
+
+    /**
+     * Определяет, находится ли нейтральный по умолчанию моб (голем, пиглин и т.д.)
+     * прямо сейчас в состоянии реальной агрессии, а не просто существует рядом.
+     *
+     * Порядок проверки:
+     *  1. {@link NeutralMob#isAngry()} — официальный ванильный признак "гнева"
+     *     (голем, пчела, полярный медведь, зомбифицированный пиглин, эндермен,
+     *     волк). Самый надёжный вариант, если моб реализует этот интерфейс.
+     *  2. Иначе, если моб — {@link Mob}, проверяем {@link Mob#getTarget()}:
+     *     наличие живой цели атаки означает, что моб уже в бою (актуально для
+     *     обычного Piglin, который не реализует NeutralMob, но заводит цель
+     *     через свой AI при провокации).
+     *  3. Если ни то, ни другое не применимо — считаем моба мирным (безопасный
+     *     дефолт: лучше не выстрелить по спокойному голему, чем открыть огонь
+     *     по мобу, который ни на кого не нападает).
+     */
+    private boolean isActuallyAggressive(Entity entity) {
+        if (entity instanceof NeutralMob neutralMob) {
+            return neutralMob.isAngry();
+        }
+        if (entity instanceof Mob mob) {
+            LivingEntity target = mob.getTarget();
+            return target != null && target.isAlive();
+        }
         return false;
     }
 

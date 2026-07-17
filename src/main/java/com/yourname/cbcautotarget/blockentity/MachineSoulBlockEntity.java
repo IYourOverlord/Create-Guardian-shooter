@@ -959,6 +959,19 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider 
      * от "мирного" (самый низкий приоритет цели).
      */
     private static boolean isHostileLike(LivingEntity entity) {
+        // Нейтральные по умолчанию мобы (голем, пиглины и т.п.) считаются
+        // "опасными" только пока реально агрессивны — см.
+        // TargetFilterData.isActuallyAggressive для той же логики.
+        if (entity.getType().is(com.yourname.cbcautotarget.CBCAutoTargetTags.NEUTRAL_ENTITIES)) {
+            if (entity instanceof net.minecraft.world.entity.NeutralMob neutralMob) {
+                return neutralMob.isAngry();
+            }
+            if (entity instanceof net.minecraft.world.entity.Mob mob) {
+                LivingEntity target = mob.getTarget();
+                return target != null && target.isAlive();
+            }
+            return false;
+        }
         if (entity instanceof Monster) return true;
         MobCategory cat = entity.getType().getCategory();
         if (cat == MobCategory.MONSTER) return true;
