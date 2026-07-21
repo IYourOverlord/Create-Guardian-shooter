@@ -54,6 +54,19 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             new java.util.concurrent.ConcurrentHashMap<>();
 
     public  static final double PITCH_TOLERANCE         = 1.0;
+    // Допуск для ЗАБЛОКИРОВАННОЙ оси (allowHorizontal/allowVertical = false) и
+    // для непрерывного контроля наведения ВО ВРЕМЯ уже идущей очереди.
+    // Заблокированная ось физически не может довернуться до wantedYaw/wantedPitch,
+    // поэтому точный YAW_TOLERANCE/PITCH_TOLERANCE для неё недостижим в принципе.
+    // Но полностью снимать проверку («стреляем при любом угле») небезопасно —
+    // именно так ствол может выстрелить совершенно не в ту сторону, задев
+    // союзников или игрока рядом. Поэтому для заблокированной оси, а также для
+    // проверки "не увело ли ствол отдачей посреди очереди", используется более
+    // широкий, но всё же ограниченный допуск: если фактический угол оси и так
+    // уже достаточно близок к необходимому для ЭТОЙ цели — можно стрелять/
+    // продолжать стрелять, если нет — стрельба не начинается или прерывается
+    // (лучше не выстрелить, чем выстрелить в произвольном направлении).
+    public  static final double LOCKED_AXIS_SAFETY_TOLERANCE = 6.0;
     private static final int    INVENTORY_SIZE           = 27;
     private static final int    TRANSFER_INTERVAL        = 10;
     private static final int    MIN_FIRE_COOLDOWN        = 20;
@@ -78,6 +91,13 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     // ── Fire state (was FireBlockEntity) ─────────────────────────────────────
     private boolean fireRequested   = false;
     private boolean cancelRequested = false;
+    // Отслеживает, "висит" ли сейчас на пушке поданный нами сигнал непрерывной
+    // автоматической стрельбы (см. requestFire()/tickFire()). CBC, получив
+    // redstone-сигнал ВКЛ, сама стреляет очередью снарядов, пока сигнал не
+    // будет явно снят — поэтому нужен отдельный флаг, чтобы можно было
+    // прервать уже ИДУЩУЮ очередь (например, если ствол увело отдачей), а не
+    // только реагировать на смерть/потерю цели.
+    private boolean activeFire      = false;
 
     // ── Rotation axis permissions ─────────────────────────────────────────────
     /** Разрешено ли горизонтальное вращение (yaw). По умолчанию включено. */
@@ -396,6 +416,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     private void doCancelFire() {
         this.fireRequested   = false;
         this.cancelRequested = true;
+        this.activeFire      = false;
     }
 
     // ── Aim / Fire wrappers (previously delegated to helper BEs) ─────────────
@@ -408,6 +429,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         doRequestFire();
         fireCooldown = MIN_FIRE_COOLDOWN;
         alignedTicks = 0;
+        activeFire   = true;
         broadcastFireToFrequencyPeers(level);
     }
 
@@ -470,11 +492,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 mainLevel.getEntitiesOfClass(LivingEntity.class, worldBox,
                         e -> e.isAlive() && filterData.isAllowed(e)
                                 && !filterData.isNearAlly(e, mainLevel)));
-        Comparator<Entity> byThreatThenDistance = Comparator
-                .comparingInt((Entity e) -> filterData.isPriorityThreat(e) ? 0 : 1)
-                .thenComparingDouble(e -> e.distanceToSqr(worldCenter));
-
-        candidates.sort(byThreatThenDistance);
+        candidates.sort(Comparator.comparingDouble(e -> e.distanceToSqr(worldCenter)));
 
         int maxChecks = CBCAutoTargetConfig.MAX_RAYCAST_CANDIDATES.get();
         List<Entity> toCheck = candidates.size() > maxChecks
@@ -641,15 +659,35 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         float   sgn          = getContraptionSign(mount);
         float   currentPitch = c.pitch * sgn;
         // Заблокированная ось (allowHorizontal/allowVertical = false) физически
-        // не может довернуться до wantedYaw/wantedPitch, поэтому сравнивать
-        // "желаемый" угол с фактическим для неё бессмысленно — она никогда не
-        // станет "ok" и просто заблокирует стрельбу навсегда. Для заблокированной
-        // оси условие готовности считается выполненным автоматически: стреляем
-        // с тем углом, который уже есть.
-        boolean yawOk   = !allowHorizontal
-                || Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE;
-        boolean pitchOk = !allowVertical
-                || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE;
+        // не может довернуться до wantedYaw/wantedPitch, поэтому точный
+        // YAW_TOLERANCE/PITCH_TOLERANCE для неё недостижим в принципе. Но
+        // полностью снимать проверку («стреляем при любом угле») небезопасно —
+        // именно так ствол может выстрелить совершенно не в ту сторону, задев
+        // союзников или игрока рядом. Поэтому для заблокированной оси
+        // используется более широкий, но всё же ограниченный допуск
+        // LOCKED_AXIS_SAFETY_TOLERANCE: стреляем, только если фактический угол
+        // и так уже достаточно близок к нужному для ЭТОЙ цели.
+        boolean yawOk   = allowHorizontal
+                ? Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE
+                : Math.abs(angleDiff(wantedYaw, c.yaw)) < LOCKED_AXIS_SAFETY_TOLERANCE;
+        boolean pitchOk = allowVertical
+                ? Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE
+                : Math.abs(wantedPitch - currentPitch) < LOCKED_AXIS_SAFETY_TOLERANCE;
+
+        // Пока очередь уже идёт (redstone-сигнал подан через requestFire() и
+        // ещё не снят), отдача от каждого выстрела (added_recoil /
+        // autocannonRecoilScale в CBC) может увести ствол в сторону прямо
+        // посреди стрельбы. CBC не спрашивает нас перед каждым отдельным
+        // снарядом очереди — она продолжит стрелять, пока сигнал не будет
+        // снят явно. Поэтому здесь же прерываем очередь, если ствол вышел за
+        // пределы безопасного допуска, не дожидаясь смерти/потери цели.
+        if (activeFire) {
+            boolean yawSafe   = Math.abs(angleDiff(wantedYaw, c.yaw)) < LOCKED_AXIS_SAFETY_TOLERANCE;
+            boolean pitchSafe = Math.abs(wantedPitch - currentPitch) < LOCKED_AXIS_SAFETY_TOLERANCE;
+            if (!yawSafe || !pitchSafe) {
+                doCancelFire();
+            }
+        }
 
         if (fireCooldown > 0) fireCooldown--;
         alignedTicks = (yawOk && pitchOk) ? alignedTicks + 1 : 0;
@@ -774,13 +812,27 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
         float   sgn          = getContraptionSign(mount);
         float   currentPitch = c.pitch * sgn;
-        // См. пояснение в aimAndFireAtEntity: заблокированная ось всегда
-        // считается готовой, иначе она никогда не станет "ok" и заблокирует
-        // огонь по командеру навсегда.
-        boolean yawOk   = !allowHorizontal
-                || Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE;
-        boolean pitchOk = !allowVertical
-                || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE;
+        // См. пояснение в aimAndFireAtEntity: для заблокированной оси точный
+        // YAW_TOLERANCE/PITCH_TOLERANCE недостижим, но полностью снимать
+        // проверку небезопасно — используется более широкий, но ограниченный
+        // допуск LOCKED_AXIS_SAFETY_TOLERANCE.
+        boolean yawOk   = allowHorizontal
+                ? Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE
+                : Math.abs(angleDiff(wantedYaw, c.yaw)) < LOCKED_AXIS_SAFETY_TOLERANCE;
+        boolean pitchOk = allowVertical
+                ? Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE
+                : Math.abs(wantedPitch - currentPitch) < LOCKED_AXIS_SAFETY_TOLERANCE;
+
+        // См. пояснение в aimAndFireAtEntity: пока очередь уже идёт, отдача
+        // может увести ствол в сторону посреди стрельбы — прерываем очередь,
+        // если вышли за пределы безопасного допуска.
+        if (activeFire) {
+            boolean yawSafe   = Math.abs(angleDiff(wantedYaw, c.yaw)) < LOCKED_AXIS_SAFETY_TOLERANCE;
+            boolean pitchSafe = Math.abs(wantedPitch - currentPitch) < LOCKED_AXIS_SAFETY_TOLERANCE;
+            if (!yawSafe || !pitchSafe) {
+                doCancelFire();
+            }
+        }
 
         if (fireCooldown > 0) fireCooldown--;
         alignedTicks = (yawOk && pitchOk) ? alignedTicks + 1 : 0;
