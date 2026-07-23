@@ -98,6 +98,12 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     // прервать уже ИДУЩУЮ очередь (например, если ствол увело отдачей), а не
     // только реагировать на смерть/потерю цели.
     private boolean activeFire      = false;
+    // Троттлинг диагностических debug-логов в scanForTarget (см. ниже) —
+    // без него при простое без цели debug.log мгновенно заваливает спамом.
+    // Пишем подробный разбор фильтрации не чаще раза в ~2 секунды (40 тиков).
+    private int     noTargetLogThrottle = 0;
+    private static final int NO_TARGET_LOG_INTERVAL_TICKS = 40;
+    private int     heartbeatTickCounter = 0;
 
     // ── Rotation axis permissions ─────────────────────────────────────────────
     /** Разрешено ли горизонтальное вращение (yaw). По умолчанию включено. */
@@ -313,11 +319,42 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             Entity e = sl.getEntity(currentTargetUUID);
             if (e == null && controllerSubLevel != null)
                 e = controllerSubLevel.getLevel().getEntity(currentTargetUUID);
-            if (e != null && e.isAlive()) aimAndFireAtEntity(sl, e, mount, tickMuzzlePos);
+            if (e != null && e.isAlive()) {
+                aimAndFireAtEntity(sl, e, mount, tickMuzzlePos);
+            } else {
+                // ДИАГНОСТИКА: scanForTarget() нашёл и запомнил currentTargetUUID, но
+                // здесь, сразу же, ту же сущность по этому UUID найти не удаётся (или
+                // она уже не жива). Раньше это молча пропускалось — pitchDirty/yawDirty
+                // никогда не выставлялись, ствол физически не двигался, и при этом НИ
+                // scanForTarget (chosen != null, там всё ок), НИ AimCache-лог (aimAndFire
+                // не вызывается) не появлялись в логах — картина "тишина в логах и полная
+                // неподвижность ствола" получалась именно отсюда.
+                LOGGER.debug("[tick] currentTargetUUID={} НЕ РЕЗОЛВИТСЯ через sl.getEntity() " +
+                                "(sl={}, controllerSubLevel={}) — aimAndFireAtEntity НЕ вызван в этом тике",
+                        currentTargetUUID, sl.dimension().location(), controllerSubLevel != null);
+            }
         }
 
         if (commanderTargetPos != null && currentTargetUUID == null) {
             aimAndFireAtCommander(sl, mount, tickMuzzlePos);
+        }
+
+        // ДИАГНОСТИКА: общий "heartbeat" всего состояния контроллера раз в секунду
+        // (20 тиков), независимо от того, какая ветка логики сработала. Нужен, чтобы
+        // по одному логу видеть ПОЛНУЮ картину — активен ли контроллер, есть ли цель,
+        // выставлены ли pitchDirty/yawDirty, куда именно целится (targetPitch/targetYaw)
+        // и что по факту сейчас у самого mount — не полагаясь на то, что нужная ветка
+        // сама что-то залогирует.
+        if (++heartbeatTickCounter >= 20) {
+            heartbeatTickCounter = 0;
+            LOGGER.debug("[heartbeat] active={} cannonMountPos={} currentTargetUUID={} commanderTargetPos={} " +
+                            "pitchDirty={} yawDirty={} targetPitch={} targetYaw={} mount.pitch={} mount.yaw={} " +
+                            "allowHorizontal={} allowVertical={} activeFire={} fireRequested={}",
+                    active, cannonMountPos, currentTargetUUID, commanderTargetPos,
+                    pitchDirty, yawDirty, targetPitch, targetYaw,
+                    mount.getContraption() != null ? mount.getContraption().pitch : Float.NaN,
+                    mount.getContraption() != null ? mount.getContraption().yaw : Float.NaN,
+                    allowHorizontal, allowVertical, activeFire, fireRequested);
         }
     }
 
@@ -352,6 +389,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     }
 
     // ── Inlined Pitch logic ───────────────────────────────────────────────────
+    private int pitchOscillationLogThrottle = 0;
+
     private void tickPitch(CannonMountBlockEntity mount) {
         if (mount.getContraption() == null) return;
 
@@ -364,6 +403,28 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         float currentWorldPitch = mount.getContraption().pitch * sgn;
         float diff              = targetPitch - currentWorldPitch;
         boolean snapped         = Math.abs(diff) <= PITCH_DEADBAND_DEG;
+
+        // ДИАГНОСТИКА: CBC (CannonMountBlockEntity.tick()) сама, независимо от нас,
+        // каждый тик прибавляет к cannonPitch значение pitchInterface.getSpeed()*sgn,
+        // если к пушке подключён кинетический вход (вал/рукоятка/мотор Create на оси
+        // тангажа). Если это значение ненулевое ОДНОВРЕМЕННО с тем, что мы сами тоже
+        // пишем в setPitch() каждый тик — два "мотора" будут драться за одно и то же
+        // поле, что выглядит как быстрые колебания на несколько градусов. Логируем
+        // раз в ~1 секунду, пока ствол ещё не "snapped" (то есть пока идёт активная
+        // коррекция), чтобы поймать именно момент возможного конфликта.
+        if (!snapped) {
+            pitchOscillationLogThrottle++;
+            if (pitchOscillationLogThrottle >= 20) {
+                pitchOscillationLogThrottle = 0;
+                float livePitchSpeed = mount.getPitchSpeed();
+                LOGGER.debug("[tickPitch] sgn={} currentWorldPitch={} targetPitch={} diff={} " +
+                                "mount.getPitchSpeed()={} (ненулевое значение = кинетика ДРАЛА бы за ось тангажа " +
+                                "одновременно с нашим setPitch())",
+                        sgn, currentWorldPitch, targetPitch, diff, livePitchSpeed);
+            }
+        } else {
+            pitchOscillationLogThrottle = 0;
+        }
 
         if (snapped) {
             mount.setPitch(targetPitch * sgn);   // convert world → raw
@@ -488,10 +549,20 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 worldCenter.x - radius, worldCenter.y - radius, worldCenter.z - radius,
                 worldCenter.x + radius, worldCenter.y + radius, worldCenter.z + radius);
 
-        List<Entity> candidates = new ArrayList<>(
-                mainLevel.getEntitiesOfClass(LivingEntity.class, worldBox,
-                        e -> e.isAlive() && filterData.isAllowed(e)
-                                && !filterData.isNearAlly(e, mainLevel)));
+        // Отдельно считаем "сырых" живых существ в боксе сканирования, ДО
+        // применения filterData — чтобы при разборе логов сразу было видно,
+        // видит ли контроллер существ в принципе (проблема с worldCenter/
+        // радиусом/размерностью) или отсеивает их уже на фильтре/isNearAlly.
+        List<LivingEntity> rawInBox = mainLevel.getEntitiesOfClass(LivingEntity.class, worldBox, e -> e.isAlive());
+
+        List<Entity> candidates = new ArrayList<>();
+        int rejectedByFilter  = 0;
+        int rejectedByAlly    = 0;
+        for (LivingEntity e : rawInBox) {
+            if (!filterData.isAllowed(e))            { rejectedByFilter++; continue; }
+            if (filterData.isNearAlly(e, mainLevel))  { rejectedByAlly++;   continue; }
+            candidates.add(e);
+        }
         candidates.sort(Comparator.comparingDouble(e -> e.distanceToSqr(worldCenter)));
 
         int maxChecks = CBCAutoTargetConfig.MAX_RAYCAST_CANDIDATES.get();
@@ -499,11 +570,42 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 ? candidates.subList(0, maxChecks) : candidates;
 
         Entity chosen = null;
+        int rejectedByLos = 0;
         for (Entity candidate : toCheck) {
             boolean los = (controllerSubLevel != null)
                     ? LineOfSightUtil.hasLineOfSightToEntityFromSubLevel(controllerSubLevel, muzzle, candidate)
                     : LineOfSightUtil.hasLineOfSightToEntity(mainLevel, muzzle, candidate);
             if (los) { chosen = candidate; break; }
+            rejectedByLos++;
+        }
+
+        // Диагностика провала поиска цели: если в боксе сканирования вообще
+        // что-то есть, но выбрать цель не удалось (или, наоборот, в боксе
+        // изначально пусто), пишем в debug.log весь путь фильтрации —
+        // сколько существ найдено сырых, сколько отсеяно filterData (маска/
+        // whitelist), сколько отсеяно как "рядом союзник", сколько отсеяно
+        // по LOS, и итог. Это позволяет по одному логу понять, на каком
+        // именно шаге контроллер "не видит" цель, не гадая вслепую.
+        if (chosen == null) {
+            noTargetLogThrottle++;
+            if (noTargetLogThrottle >= NO_TARGET_LOG_INTERVAL_TICKS) {
+                noTargetLogThrottle = 0;
+                LOGGER.debug("[scanForTarget] pos={} worldCenter={} muzzle={} radius={} filterMask={} " +
+                                "rawInBox={} rejectedByFilter={} rejectedByAlly={} candidatesAfterFilter={} " +
+                                "checkedForLos={} rejectedByLos={} controllerSubLevel={} -> NO TARGET",
+                        worldPosition, worldCenter, muzzle, radius, filterData.getMask(),
+                        rawInBox.size(), rejectedByFilter, rejectedByAlly, candidates.size(),
+                        toCheck.size(), rejectedByLos, controllerSubLevel != null);
+                if (!rawInBox.isEmpty()) {
+                    for (LivingEntity e : rawInBox) {
+                        LOGGER.debug("[scanForTarget]   candidate={} type={} pos={} alive={} isAllowed={} isNearAlly={}",
+                                e.getUUID(), e.getType(), e.position(), e.isAlive(),
+                                filterData.isAllowed(e), filterData.isNearAlly(e, mainLevel));
+                    }
+                }
+            }
+        } else {
+            noTargetLogThrottle = 0;
         }
 
         if (chosen != null) {
@@ -636,16 +738,25 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             // Use world-space pitch limits: for inverted cannons (sgn=-1) depression
             // and elevation are physically swapped relative to world space.
             float sgnE = getContraptionSign(mount);
+            float wMaxDep = worldMaxDepression(c, sgnE);
+            float wMaxEle = worldMaxElevation(c, sgnE);
             entityAimCache       = BallisticSolver.solve(muzzle, targetPos, relVel,
                     CBCAutoTargetConfig.MUZZLE_SPEED_BLOCKS_PER_TICK.get(),
                     CBCAutoTargetConfig.DEFAULT_GRAVITY.get(),
                     CBCAutoTargetConfig.DEFAULT_DRAG.get(),
-                    false, worldMaxDepression(c, sgnE), worldMaxElevation(c, sgnE));
+                    false, wMaxDep, wMaxEle);
             entityAimCacheMuzzle = muzzle;
             entityAimCacheTarget = targetPos;
             entityAimCacheRelVel = relVel;
             entityAimCacheAge    = 0;
-            LOGGER.debug("[AimCache] entity recalc at {}", worldPosition);
+            // ДИАГНОСТИКА: сравниваем то, что мы считаем "физическим пределом", с тем,
+            // что реально сообщает контрапшен CBC (maximumElevation/maximumDepression),
+            // и что вернул сам solve() ДО прогона через toLocalAim() — чтобы поймать
+            // рассинхронизацию между нашим клэмпом и клэмпом CBC внутри CannonMountBlockEntity.tick().
+            LOGGER.debug("[AimCache] entity recalc at {} sgnE={} c.maximumElevation()={} c.maximumDepression()={} " +
+                            "wMaxDep(passedToSolve)={} wMaxEle(passedToSolve)={} solveOutput_yaw={} solveOutput_pitch={}",
+                    worldPosition, sgnE, c.maximumElevation(), c.maximumDepression(),
+                    wMaxDep, wMaxEle, entityAimCache[0], entityAimCache[1]);
         }
         double[] aim = entityAimCache;
         // ─────────────────────────────────────────────────────────────────────
@@ -791,15 +902,24 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         if (needRecalc) {
             // Same world-space limit correction for commander targets.
             float sgnC = getContraptionSign(mount);
+            float wMaxDepC = worldMaxDepression(c, sgnC);
+            float wMaxEleC = worldMaxElevation(c, sgnC);
             cmdAimCache       = BallisticSolver.solve(muzzle, targetPos, relVel,
                     CBCAutoTargetConfig.MUZZLE_SPEED_BLOCKS_PER_TICK.get(),
                     CBCAutoTargetConfig.DEFAULT_GRAVITY.get(),
                     CBCAutoTargetConfig.DEFAULT_DRAG.get(),
-                    false, worldMaxDepression(c, sgnC), worldMaxElevation(c, sgnC));
+                    false, wMaxDepC, wMaxEleC);
             cmdAimCacheMuzzle = muzzle;
             cmdAimCacheTarget = targetPos;
             cmdAimCacheAge    = 0;
-            LOGGER.debug("[AimCache] commander recalc at {}", worldPosition);
+            // ДИАГНОСТИКА: см. аналогичный лог в aimAndFireAtEntity — сравниваем наш
+            // клэмп с фактическими c.maximumElevation()/c.maximumDepression() в момент
+            // пересчёта, и что реально вернул solve() до toLocalAim().
+            LOGGER.debug("[AimCache] commander recalc at {} sgnC={} c.maximumElevation()={} c.maximumDepression()={} " +
+                            "wMaxDep(passedToSolve)={} wMaxEle(passedToSolve)={} solveOutput_yaw={} solveOutput_pitch={} " +
+                            "muzzle={} targetPos={}",
+                    worldPosition, sgnC, c.maximumElevation(), c.maximumDepression(),
+                    wMaxDepC, wMaxEleC, cmdAimCache[0], cmdAimCache[1], muzzle, targetPos);
         }
         double[] aim = cmdAimCache;
         // ─────────────────────────────────────────────────────────────────────
