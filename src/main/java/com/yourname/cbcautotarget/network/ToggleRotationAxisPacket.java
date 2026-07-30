@@ -67,13 +67,11 @@ public record ToggleRotationAxisPacket(BlockPos pos, boolean axis, boolean enabl
             if (packet.axis()) {
                 // true = горизонталь (yaw)
                 controller.setAllowHorizontal(packet.enabled());
-                LOGGER.debug("[ToggleRotationAxis] allowHorizontal={} at {} by player={}",
-                        packet.enabled(), packet.pos(), sp.getGameProfile().getName());
+                LOGGER.debug("[ToggleRotationAxis] allowHorizontal={} at {}", packet.enabled(), packet.pos());
             } else {
                 // false = вертикаль (pitch)
                 controller.setAllowVertical(packet.enabled());
-                LOGGER.debug("[ToggleRotationAxis] allowVertical={} at {} by player={}",
-                        packet.enabled(), packet.pos(), sp.getGameProfile().getName());
+                LOGGER.debug("[ToggleRotationAxis] allowVertical={} at {}", packet.enabled(), packet.pos());
             }
         });
     }

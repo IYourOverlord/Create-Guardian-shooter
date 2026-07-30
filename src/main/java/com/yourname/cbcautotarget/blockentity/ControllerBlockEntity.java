@@ -54,19 +54,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             new java.util.concurrent.ConcurrentHashMap<>();
 
     public  static final double PITCH_TOLERANCE         = 1.0;
-    // Допуск для ЗАБЛОКИРОВАННОЙ оси (allowHorizontal/allowVertical = false) и
-    // для непрерывного контроля наведения ВО ВРЕМЯ уже идущей очереди.
-    // Заблокированная ось физически не может довернуться до wantedYaw/wantedPitch,
-    // поэтому точный YAW_TOLERANCE/PITCH_TOLERANCE для неё недостижим в принципе.
-    // Но полностью снимать проверку («стреляем при любом угле») небезопасно —
-    // именно так ствол может выстрелить совершенно не в ту сторону, задев
-    // союзников или игрока рядом. Поэтому для заблокированной оси, а также для
-    // проверки "не увело ли ствол отдачей посреди очереди", используется более
-    // широкий, но всё же ограниченный допуск: если фактический угол оси и так
-    // уже достаточно близок к необходимому для ЭТОЙ цели — можно стрелять/
-    // продолжать стрелять, если нет — стрельба не начинается или прерывается
-    // (лучше не выстрелить, чем выстрелить в произвольном направлении).
-    public  static final double LOCKED_AXIS_SAFETY_TOLERANCE = 6.0;
     private static final int    INVENTORY_SIZE           = 27;
     private static final int    TRANSFER_INTERVAL        = 10;
     private static final int    MIN_FIRE_COOLDOWN        = 20;
@@ -81,36 +68,16 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     private static final float  YAW_MAX_DEG_PER_TICK = 9.6f;
     private float   targetYaw   = 0f;
     private boolean yawDirty    = false;
-    // Собственное состояние доводки yaw, симметрично currentPitchWorld —
-    // не читаем c.yaw как источник истины каждый тик, только пишем в него.
-    private float currentYawWorld = Float.NaN;
 
     // ── Pitch state (was PitchBlockEntity) ───────────────────────────────────
     private static final float PITCH_DEADBAND_DEG     = 0.1f;
     private static final float PITCH_MAX_DEG_PER_TICK = 9.6f;
     private float   targetPitch  = 0f;
     private boolean pitchDirty   = false;
-    // Собственное состояние доводки pitch, НЕ читаемое из c.pitch каждый тик
-    // (см. tickPitch()). NaN означает "не инициализировано" — при первом
-    // вызове после этого возьмём стартовое значение из c.pitch один раз.
-    private float currentPitchWorld = Float.NaN;
 
     // ── Fire state (was FireBlockEntity) ─────────────────────────────────────
     private boolean fireRequested   = false;
     private boolean cancelRequested = false;
-    // Отслеживает, "висит" ли сейчас на пушке поданный нами сигнал непрерывной
-    // автоматической стрельбы (см. requestFire()/tickFire()). CBC, получив
-    // redstone-сигнал ВКЛ, сама стреляет очередью снарядов, пока сигнал не
-    // будет явно снят — поэтому нужен отдельный флаг, чтобы можно было
-    // прервать уже ИДУЩУЮ очередь (например, если ствол увело отдачей), а не
-    // только реагировать на смерть/потерю цели.
-    private boolean activeFire      = false;
-    // Троттлинг диагностических debug-логов в scanForTarget (см. ниже) —
-    // без него при простое без цели debug.log мгновенно заваливает спамом.
-    // Пишем подробный разбор фильтрации не чаще раза в ~2 секунды (40 тиков).
-    private int     noTargetLogThrottle = 0;
-    private static final int NO_TARGET_LOG_INTERVAL_TICKS = 40;
-    private int     heartbeatTickCounter = 0;
 
     // ── Rotation axis permissions ─────────────────────────────────────────────
     /** Разрешено ли горизонтальное вращение (yaw). По умолчанию включено. */
@@ -326,72 +293,32 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             Entity e = sl.getEntity(currentTargetUUID);
             if (e == null && controllerSubLevel != null)
                 e = controllerSubLevel.getLevel().getEntity(currentTargetUUID);
-            if (e != null && e.isAlive()) {
-                aimAndFireAtEntity(sl, e, mount, tickMuzzlePos);
-            } else {
-                LOGGER.debug("[tick] currentTargetUUID={} не найден в мире — цель потеряна, aimAndFireAtEntity пропущен",
-                        currentTargetUUID);
-            }
+            if (e != null && e.isAlive()) aimAndFireAtEntity(sl, e, mount, tickMuzzlePos);
         }
 
         if (commanderTargetPos != null && currentTargetUUID == null) {
             aimAndFireAtCommander(sl, mount, tickMuzzlePos);
         }
-
-        // Общий "heartbeat" состояния контроллера раз в секунду — удобно для
-        // диагностики: активность, текущая цель, dirty-флаги, текущий и
-        // целевой pitch/yaw.
-        if (++heartbeatTickCounter >= 20) {
-            heartbeatTickCounter = 0;
-            LOGGER.debug("[heartbeat] active={} cannonMountPos={} currentTargetUUID={} commanderTargetPos={} " +
-                            "pitchDirty={} yawDirty={} targetPitch={} targetYaw={} mount.pitch={} mount.yaw={} " +
-                            "allowHorizontal={} allowVertical={} activeFire={} fireRequested={}",
-                    active, cannonMountPos, currentTargetUUID, commanderTargetPos,
-                    pitchDirty, yawDirty, targetPitch, targetYaw,
-                    mount.getContraption() != null ? mount.getContraption().pitch : Float.NaN,
-                    mount.getContraption() != null ? mount.getContraption().yaw : Float.NaN,
-                    allowHorizontal, allowVertical, activeFire, fireRequested);
-        }
     }
 
     // ── Inlined Yaw logic ─────────────────────────────────────────────────────
     private void tickYaw(CannonMountBlockEntity mount) {
-        PitchOrientedContraptionEntity c = mount.getContraption();
-        if (c == null) return;
-        if (Float.isNaN(c.yaw)) return; // see tickPitch() — Sable can briefly report NaN
+        if (mount.getContraption() == null) return;
 
-        // Тот же радикальный подход, что и в tickPitch(): держим собственное
-        // состояние доводки (currentYawWorld), не читаем c.yaw как источник
-        // истины каждый тик — только пишем в него напрямую. Инициализация из
-        // c.yaw происходит один раз при первом наведении.
-        if (Float.isNaN(currentYawWorld)) {
-            currentYawWorld = (float) wrap360(c.yaw);
-        }
-
+        double currentYaw = wrap360(mount.getContraption().yaw);
         double desiredYaw = wrap360(targetYaw);
-        double diff        = shortestYawDelta(currentYawWorld, desiredYaw);
-        boolean snapped     = Math.abs(diff) <= YAW_DEADBAND_DEG;
+        double diff       = shortestYawDelta(currentYaw, desiredYaw);
+        boolean snapped   = Math.abs(diff) <= YAW_DEADBAND_DEG;
 
         if (snapped) {
-            currentYawWorld = (float) desiredYaw;
-            yawDirty        = false;
+            mount.setYaw((float) desiredYaw);
+            mount.notifyUpdate();
+            yawDirty = false;
         } else {
             double step = Math.min(Math.abs(diff), YAW_MAX_DEG_PER_TICK) * Math.signum(diff);
-            currentYawWorld = (float) wrap360(currentYawWorld + step);
+            mount.setYaw((float) wrap360(currentYaw + step));
+            mount.notifyUpdate();
         }
-
-        c.yaw = currentYawWorld;
-        // ВАЖНО: CBC рендерит модель пушки по c.pitch/c.yaw (кастомные поля,
-        // через CBCContraptionRotationState), но реальное направление
-        // ВЫСТРЕЛА (fireShot() -> toGlobalVector() -> applyRotation()) в CBC
-        // читает СТАНДАРТНЫЕ Minecraft xRot/yRot самой сущности через
-        // getViewXRot()/getViewYRot() — эти поля НЕ синхронизируются с
-        // c.pitch/c.yaw автоматически вне режима ручного управления
-        // пассажиром. Без этой синхронизации ствол визуально поворачивается
-        // правильно, а снаряд летит в направлении, зафиксированном на
-        // xRot/yRot с последнего ручного изменения (или дефолт 0).
-        c.setYRot(currentYawWorld);
-        mount.notifyUpdate();
     }
 
     private static double wrap360(double deg) {
@@ -405,48 +332,57 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     }
 
     // ── Inlined Pitch logic ───────────────────────────────────────────────────
-
     private void tickPitch(CannonMountBlockEntity mount) {
-        PitchOrientedContraptionEntity c = mount.getContraption();
-        if (c == null) return;
+        if (mount.getContraption() == null) return;
 
-        // РАДИКАЛЬНЫЙ ПОДХОД (после долгого расследования не удалось найти
-        // точный источник инверсии знака между тиками при чтении c.pitch
-        // обратно). Больше НЕ читаем c.pitch как источник истины и НЕ
-        // домножаем на getContraptionSign() — вместо этого держим
-        // СОБСТЕННОЕ состояние доводки (currentPitchWorld), полностью
-        // независимое от CBC, и каждый тик просто пишем его напрямую в
-        // c.pitch. Инициализируем currentPitchWorld из c.pitch только один
-        // раз, при первом наведении на новую цель (см. ниже), чтобы не
-        // начинать каждый раз с нуля, но дальше полностью игнорируем то,
-        // что реально хранится в c.pitch между нашими тиками.
-        if (Float.isNaN(currentPitchWorld)) {
-            currentPitchWorld = Float.isNaN(c.pitch) ? 0f : c.pitch;
-        }
-
-        float diff      = targetPitch - currentPitchWorld;
-        boolean snapped = Math.abs(diff) <= PITCH_DEADBAND_DEG;
+        // ИСПРАВЛЕНО (корень проблемы с "телепанием"/зависанием при наведении):
+        //
+        // mount.getContraption().pitch — это "raw" pitch контрапшена. Чтобы
+        // получить логический (world-space) pitch, его действительно нужно
+        // умножить на sgn: currentWorldPitch = c.pitch * sgn. Это чтение —
+        // верно и не менялось.
+        //
+        // НО mount.setPitch(float) — это НЕ обратная операция для чтения
+        // c.pitch. В декомпилированном исходнике CBC (CannonMountBlockEntity,
+        // версия 5.11.6/1.21.1) видно, что:
+        //
+        //   public void setPitch(float pitch) { this.cannonPitch = pitch; }
+        //
+        // То есть setPitch() просто напрямую записывает значение в cannonPitch
+        // (уже логическую, мировую величину, которая клэмпится CBC пределами
+        // -maximumDepression()..maximumElevation() БЕЗ участия sgn). Домножение
+        // на raw происходит позже и автоматически, внутри applyRotation():
+        //
+        //   this.mountedContraption.pitch = this.cannonPitch * sgn;
+        //
+        // Прошлая версия этого метода домножала target на sgn ПЕРЕД вызовом
+        // setPitch(), то есть применяла конвертацию дважды для пушек с
+        // sgn = -1 (не совпадающих по горизонтальной ориентации контрапшена
+        // с "нормальным" случаем). В результате CBC каждый тик получал
+        // pitch с инвертированным знаком относительно реально желаемого,
+        // тут же сам довинчивал это значение в противоположную сторону —
+        // и на следующем тике наш diff снова оказывался "неправильным",
+        // из-за чего пушка никогда не попадала в PITCH_DEADBAND_DEG и
+        // непрерывно дёргалась, откатываясь к 0 (точке, где знак роли не
+        // играет и обе стороны временно совпадают).
+        //
+        // Фикс: setPitch() вызывается с логическим (world-space) значением
+        // напрямую, без повторного домножения на sgn.
+        float sgn               = getContraptionSign(mount);
+        float currentWorldPitch = mount.getContraption().pitch * sgn;   // raw → world (верно, не трогаем)
+        float diff              = targetPitch - currentWorldPitch;
+        boolean snapped         = Math.abs(diff) <= PITCH_DEADBAND_DEG;
 
         if (snapped) {
-            currentPitchWorld = targetPitch;
-            pitchDirty        = false;
+            mount.setPitch(targetPitch);   // setPitch ожидает world-space, НЕ raw
+            mount.notifyUpdate();
+            pitchDirty = false;
         } else {
             float step = Math.min(Math.abs(diff), PITCH_MAX_DEG_PER_TICK) * Math.signum(diff);
-            currentPitchWorld += step;
+            mount.setPitch(currentWorldPitch + step);  // setPitch ожидает world-space, НЕ raw
+            mount.notifyUpdate();
         }
-
-        c.pitch = currentPitchWorld;
-        // См. пояснение в tickYaw(): реальное направление выстрела CBC
-        // читает стандартный xRot сущности, а не кастомное поле pitch.
-        // Найденная в CBC формула для пассажира: xRot = -pitch.
-        c.setXRot(-currentPitchWorld);
-        mount.notifyUpdate();
-
-        LOGGER.debug("[tickPitch] currentPitchWorld={} targetPitch={} diff={} snapped={} allowVertical={} " +
-                        "pitchDirty={} c.pitch(readback)={}",
-                currentPitchWorld, targetPitch, diff, snapped, allowVertical, pitchDirty, c.pitch);
     }
-
 
     // ── Inlined Fire logic ────────────────────────────────────────────────────
     private void tickFire(Level level, CannonMountBlockEntity mount) {
@@ -488,7 +424,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     private void doCancelFire() {
         this.fireRequested   = false;
         this.cancelRequested = true;
-        this.activeFire      = false;
     }
 
     // ── Aim / Fire wrappers (previously delegated to helper BEs) ─────────────
@@ -501,7 +436,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         doRequestFire();
         fireCooldown = MIN_FIRE_COOLDOWN;
         alignedTicks = 0;
-        activeFire   = true;
         broadcastFireToFrequencyPeers(level);
     }
 
@@ -560,63 +494,26 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 worldCenter.x - radius, worldCenter.y - radius, worldCenter.z - radius,
                 worldCenter.x + radius, worldCenter.y + radius, worldCenter.z + radius);
 
-        // Отдельно считаем "сырых" живых существ в боксе сканирования, ДО
-        // применения filterData — чтобы при разборе логов сразу было видно,
-        // видит ли контроллер существ в принципе (проблема с worldCenter/
-        // радиусом/размерностью) или отсеивает их уже на фильтре/isNearAlly.
-        List<LivingEntity> rawInBox = mainLevel.getEntitiesOfClass(LivingEntity.class, worldBox, e -> e.isAlive());
+        List<Entity> candidates = new ArrayList<>(
+                mainLevel.getEntitiesOfClass(LivingEntity.class, worldBox,
+                        e -> e.isAlive() && filterData.isAllowed(e)
+                                && !filterData.isNearAlly(e, mainLevel)));
+        Comparator<Entity> byThreatThenDistance = Comparator
+                .comparingInt((Entity e) -> filterData.isPriorityThreat(e) ? 0 : 1)
+                .thenComparingDouble(e -> e.distanceToSqr(worldCenter));
 
-        List<Entity> candidates = new ArrayList<>();
-        int rejectedByFilter  = 0;
-        int rejectedByAlly    = 0;
-        for (LivingEntity e : rawInBox) {
-            if (!filterData.isAllowed(e))            { rejectedByFilter++; continue; }
-            if (filterData.isNearAlly(e, mainLevel))  { rejectedByAlly++;   continue; }
-            candidates.add(e);
-        }
-        candidates.sort(Comparator.comparingDouble(e -> e.distanceToSqr(worldCenter)));
+        candidates.sort(byThreatThenDistance);
 
         int maxChecks = CBCAutoTargetConfig.MAX_RAYCAST_CANDIDATES.get();
         List<Entity> toCheck = candidates.size() > maxChecks
                 ? candidates.subList(0, maxChecks) : candidates;
 
         Entity chosen = null;
-        int rejectedByLos = 0;
         for (Entity candidate : toCheck) {
             boolean los = (controllerSubLevel != null)
                     ? LineOfSightUtil.hasLineOfSightToEntityFromSubLevel(controllerSubLevel, muzzle, candidate)
                     : LineOfSightUtil.hasLineOfSightToEntity(mainLevel, muzzle, candidate);
             if (los) { chosen = candidate; break; }
-            rejectedByLos++;
-        }
-
-        // Диагностика провала поиска цели: если в боксе сканирования вообще
-        // что-то есть, но выбрать цель не удалось (или, наоборот, в боксе
-        // изначально пусто), пишем в debug.log весь путь фильтрации —
-        // сколько существ найдено сырых, сколько отсеяно filterData (маска/
-        // whitelist), сколько отсеяно как "рядом союзник", сколько отсеяно
-        // по LOS, и итог. Это позволяет по одному логу понять, на каком
-        // именно шаге контроллер "не видит" цель, не гадая вслепую.
-        if (chosen == null) {
-            noTargetLogThrottle++;
-            if (noTargetLogThrottle >= NO_TARGET_LOG_INTERVAL_TICKS) {
-                noTargetLogThrottle = 0;
-                LOGGER.debug("[scanForTarget] pos={} worldCenter={} muzzle={} radius={} filterMask={} " +
-                                "rawInBox={} rejectedByFilter={} rejectedByAlly={} candidatesAfterFilter={} " +
-                                "checkedForLos={} rejectedByLos={} controllerSubLevel={} -> NO TARGET",
-                        worldPosition, worldCenter, muzzle, radius, filterData.getMask(),
-                        rawInBox.size(), rejectedByFilter, rejectedByAlly, candidates.size(),
-                        toCheck.size(), rejectedByLos, controllerSubLevel != null);
-                if (!rawInBox.isEmpty()) {
-                    for (LivingEntity e : rawInBox) {
-                        LOGGER.debug("[scanForTarget]   candidate={} type={} pos={} alive={} isAllowed={} isNearAlly={}",
-                                e.getUUID(), e.getType(), e.position(), e.isAlive(),
-                                filterData.isAllowed(e), filterData.isNearAlly(e, mainLevel));
-                    }
-                }
-            }
-        } else {
-            noTargetLogThrottle = 0;
         }
 
         if (chosen != null) {
@@ -749,21 +646,16 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             // Use world-space pitch limits: for inverted cannons (sgn=-1) depression
             // and elevation are physically swapped relative to world space.
             float sgnE = getContraptionSign(mount);
-            float wMaxDep = worldMaxDepression(c, sgnE);
-            float wMaxEle = worldMaxElevation(c, sgnE);
             entityAimCache       = BallisticSolver.solve(muzzle, targetPos, relVel,
                     CBCAutoTargetConfig.MUZZLE_SPEED_BLOCKS_PER_TICK.get(),
                     CBCAutoTargetConfig.DEFAULT_GRAVITY.get(),
                     CBCAutoTargetConfig.DEFAULT_DRAG.get(),
-                    false, wMaxDep, wMaxEle);
+                    false, worldMaxDepression(c, sgnE), worldMaxElevation(c, sgnE));
             entityAimCacheMuzzle = muzzle;
             entityAimCacheTarget = targetPos;
             entityAimCacheRelVel = relVel;
             entityAimCacheAge    = 0;
-            LOGGER.debug("[AimCache] entity recalc at {} sgnE={} c.maximumElevation()={} c.maximumDepression()={} " +
-                            "wMaxDep={} wMaxEle={} solveOutput_yaw={} solveOutput_pitch={}",
-                    worldPosition, sgnE, c.maximumElevation(), c.maximumDepression(),
-                    wMaxDep, wMaxEle, entityAimCache[0], entityAimCache[1]);
+            LOGGER.debug("[AimCache] entity recalc at {}", worldPosition);
         }
         double[] aim = entityAimCache;
         // ─────────────────────────────────────────────────────────────────────
@@ -774,30 +666,18 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
         applyAim(level, wantedYaw, wantedPitch);
 
-        float   currentPitch = currentPitchWorld;
-        // LOCKED_AXIS_SAFETY_TOLERANCE: стреляем, только если фактический угол
-        // и так уже достаточно близок к нужному для ЭТОЙ цели.
-        boolean yawOk   = allowHorizontal
-                ? Math.abs(angleDiff(wantedYaw, currentYawWorld)) < BallisticSolver.YAW_TOLERANCE
-                : Math.abs(angleDiff(wantedYaw, currentYawWorld)) < LOCKED_AXIS_SAFETY_TOLERANCE;
-        boolean pitchOk = allowVertical
-                ? Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE
-                : Math.abs(wantedPitch - currentPitch) < LOCKED_AXIS_SAFETY_TOLERANCE;
-
-        // Пока очередь уже идёт (redstone-сигнал подан через requestFire() и
-        // ещё не снят), отдача от каждого выстрела (added_recoil /
-        // autocannonRecoilScale в CBC) может увести ствол в сторону прямо
-        // посреди стрельбы. CBC не спрашивает нас перед каждым отдельным
-        // снарядом очереди — она продолжит стрелять, пока сигнал не будет
-        // снят явно. Поэтому здесь же прерываем очередь, если ствол вышел за
-        // пределы безопасного допуска, не дожидаясь смерти/потери цели.
-        if (activeFire) {
-            boolean yawSafe   = Math.abs(angleDiff(wantedYaw, currentYawWorld)) < LOCKED_AXIS_SAFETY_TOLERANCE;
-            boolean pitchSafe = Math.abs(wantedPitch - currentPitch) < LOCKED_AXIS_SAFETY_TOLERANCE;
-            if (!yawSafe || !pitchSafe) {
-                doCancelFire();
-            }
-        }
+        float   sgn          = getContraptionSign(mount);
+        float   currentPitch = c.pitch * sgn;
+        // Заблокированная ось (allowHorizontal/allowVertical = false) физически
+        // не может довернуться до wantedYaw/wantedPitch, поэтому сравнивать
+        // "желаемый" угол с фактическим для неё бессмысленно — она никогда не
+        // станет "ok" и просто заблокирует стрельбу навсегда. Для заблокированной
+        // оси условие готовности считается выполненным автоматически: стреляем
+        // с тем углом, который уже есть.
+        boolean yawOk   = !allowHorizontal
+                || Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE;
+        boolean pitchOk = !allowVertical
+                || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE;
 
         if (fireCooldown > 0) fireCooldown--;
         alignedTicks = (yawOk && pitchOk) ? alignedTicks + 1 : 0;
@@ -901,20 +781,15 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         if (needRecalc) {
             // Same world-space limit correction for commander targets.
             float sgnC = getContraptionSign(mount);
-            float wMaxDepC = worldMaxDepression(c, sgnC);
-            float wMaxEleC = worldMaxElevation(c, sgnC);
             cmdAimCache       = BallisticSolver.solve(muzzle, targetPos, relVel,
                     CBCAutoTargetConfig.MUZZLE_SPEED_BLOCKS_PER_TICK.get(),
                     CBCAutoTargetConfig.DEFAULT_GRAVITY.get(),
                     CBCAutoTargetConfig.DEFAULT_DRAG.get(),
-                    false, wMaxDepC, wMaxEleC);
+                    false, worldMaxDepression(c, sgnC), worldMaxElevation(c, sgnC));
             cmdAimCacheMuzzle = muzzle;
             cmdAimCacheTarget = targetPos;
             cmdAimCacheAge    = 0;
-            LOGGER.debug("[AimCache] commander recalc at {} sgnC={} c.maximumElevation()={} c.maximumDepression()={} " +
-                            "wMaxDep={} wMaxEle={} solveOutput_yaw={} solveOutput_pitch={} muzzle={} targetPos={}",
-                    worldPosition, sgnC, c.maximumElevation(), c.maximumDepression(),
-                    wMaxDepC, wMaxEleC, cmdAimCache[0], cmdAimCache[1], muzzle, targetPos);
+            LOGGER.debug("[AimCache] commander recalc at {}", worldPosition);
         }
         double[] aim = cmdAimCache;
         // ─────────────────────────────────────────────────────────────────────
@@ -925,24 +800,15 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
         applyAim(level, wantedYaw, wantedPitch);
 
-        float   currentPitch = currentPitchWorld;
-        boolean yawOk   = allowHorizontal
-                ? Math.abs(angleDiff(wantedYaw, currentYawWorld)) < BallisticSolver.YAW_TOLERANCE
-                : Math.abs(angleDiff(wantedYaw, currentYawWorld)) < LOCKED_AXIS_SAFETY_TOLERANCE;
-        boolean pitchOk = allowVertical
-                ? Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE
-                : Math.abs(wantedPitch - currentPitch) < LOCKED_AXIS_SAFETY_TOLERANCE;
-
-        // См. пояснение в aimAndFireAtEntity: пока очередь уже идёт, отдача
-        // может увести ствол в сторону посреди стрельбы — прерываем очередь,
-        // если вышли за пределы безопасного допуска.
-        if (activeFire) {
-            boolean yawSafe   = Math.abs(angleDiff(wantedYaw, currentYawWorld)) < LOCKED_AXIS_SAFETY_TOLERANCE;
-            boolean pitchSafe = Math.abs(wantedPitch - currentPitch) < LOCKED_AXIS_SAFETY_TOLERANCE;
-            if (!yawSafe || !pitchSafe) {
-                doCancelFire();
-            }
-        }
+        float   sgn          = getContraptionSign(mount);
+        float   currentPitch = c.pitch * sgn;
+        // См. пояснение в aimAndFireAtEntity: заблокированная ось всегда
+        // считается готовой, иначе она никогда не станет "ok" и заблокирует
+        // огонь по командеру навсегда.
+        boolean yawOk   = !allowHorizontal
+                || Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE;
+        boolean pitchOk = !allowVertical
+                || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE;
 
         if (fireCooldown > 0) fireCooldown--;
         alignedTicks = (yawOk && pitchOk) ? alignedTicks + 1 : 0;
@@ -953,6 +819,26 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     }
 
     // ── Cannon helpers ────────────────────────────────────────────────────────
+    /**
+     * Знак конвертации между "raw" pitch контрапшена (c.pitch, хранится в
+     * PitchOrientedContraptionEntity) и "логическим"/мировым pitch, которым
+     * оперирует наш код (targetPitch, BallisticSolver и т.д.).
+     *
+     * Формула сверена напрямую с декомпилированным исходником CBC
+     * (CannonMountBlockEntity.applyRotation() / getPitchOffset(), версия
+     * 5.11.6 для MC 1.21.1) и полностью ему соответствует:
+     *
+     *   Direction dir = mountedContraption.getInitialOrientation();
+     *   boolean flag = (dir.getAxisDirection() == POSITIVE) == (dir.getAxis() == Axis.X);
+     *   float sgn = flag ? 1.0F : -1.0F;
+     *
+     * Это НЕ связано с тем, находится ли mount выше или ниже controller —
+     * это чисто горизонтальный признак (по какой оси и в какую сторону
+     * "смотрит" исходная ориентация контрапшена). Раньше здесь ошибочно
+     * стояла привязка к вертикальному положению mount — это было неверно
+     * и никак не являлось источником проблемы с зависанием/телепанием
+     * пушки. Настоящая причина была в другом месте (см. tickPitch()).
+     */
     private static float getContraptionSign(CannonMountBlockEntity mount) {
         Direction d = mount.getContraptionDirection();
         boolean flag = (d.getAxisDirection() == Direction.AxisDirection.POSITIVE)
@@ -961,18 +847,26 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     }
 
     /**
-     * Returns the effective maximum depression in WORLD space.
-     * For sgn=+1 (normal) cannons this equals c.maximumDepression().
-     * For sgn=-1 (inverted) cannons raw "depression" is physically upward,
-     * so world-space depression = c.maximumElevation() and vice-versa.
+     * ИСПРАВЛЕНО: раньше depression/elevation свопались местами при sgn=-1,
+     * по аналогии с (ошибочным) предположением, что raw↔world конвертация
+     * pitch должна затрагивать и пределы. Но в декомпилированном CBC видно
+     * (CannonMountBlockEntity.tick()):
+     *
+     *   this.cannonPitch = Mth.clamp(newPitch % 360.0F, -getMaxDepress(), getMaxElevate());
+     *
+     * где getMaxDepress()/getMaxElevate() берутся из контрапшена НАПРЯМУЮ,
+     * без какого-либо участия sgn. cannonPitch — уже логическая (мировая)
+     * величина в той же системе координат, что и наш targetPitch, так что
+     * никакого свопа депрессии/элевации по знаку контрапшена не требуется —
+     * пределы одинаковы независимо от sgn.
      */
     private static float worldMaxDepression(PitchOrientedContraptionEntity c, float sgn) {
-        return sgn >= 0 ? c.maximumDepression() : c.maximumElevation();
+        return c.maximumDepression();
     }
 
     /** @see #worldMaxDepression */
     private static float worldMaxElevation(PitchOrientedContraptionEntity c, float sgn) {
-        return sgn >= 0 ? c.maximumElevation() : c.maximumDepression();
+        return c.maximumElevation();
     }
 
     private Vec3 getControllerWorldPos() {
@@ -1010,10 +904,12 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         if (controllerSubLevel != null) base = SableCompat.toWorldPos(controllerSubLevel, base);
         double len = CBCAutoTargetConfig.BARREL_LENGTH.get();
         if (len <= 0.0) return base;
-        // c.pitch/currentYawWorld теперь хранят world-space значения
-        // напрямую (см. tickPitch()/tickYaw()), без raw/sgn конверсии.
-        double yawRad   = Math.toRadians(-currentYawWorld + 90.0);
-        double pitchRad = Math.toRadians(c.pitch);   // world-space pitch
+        // c.pitch is raw (CBC internal). For inverted cannons (sgn=-1) the physical
+        // barrel direction is opposite to raw pitch, so we must use worldPitch = raw * sgn.
+        CannonMountBlockEntity mount = findMountBlockEntity();
+        float sgn = (mount != null) ? getContraptionSign(mount) : 1.0f;
+        double yawRad   = Math.toRadians(-c.yaw + 90.0);
+        double pitchRad = Math.toRadians(c.pitch * sgn);   // world-space pitch
         double cosP = Math.cos(pitchRad);
         return base.add(cosP * Math.cos(yawRad) * len,
                 Math.sin(pitchRad) * len,
