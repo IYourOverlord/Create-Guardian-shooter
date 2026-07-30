@@ -489,6 +489,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     // ── Scanning ──────────────────────────────────────────────────────────────
     private void scanForTarget(Level level, ServerLevel mainLevel, Level scanLevel, Vec3 worldCenter, Vec3 muzzle) {
         int  radius      = getScanRadius();
+        UUID prevUUID    = currentTargetUUID;
 
         AABB worldBox = new AABB(
                 worldCenter.x - radius, worldCenter.y - radius, worldCenter.z - radius,
@@ -526,13 +527,37 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 losGraceTicks = 0;
             }
             commanderTargetPos = null;
-        } else {
-            currentTargetUUID = null;
-            confirmTicks      = 0;
-            alignedTicks      = 0;
-            doCancelFire();
-            scanForCommanderTargets(scanLevel, mainLevel, worldCenter, muzzle);
+            return;
         }
+
+        // Скан не нашёл цель (не в AABB-кандидатах либо не прошла LOS среди
+        // проверенных). Прежде чем сбрасывать currentTargetUUID, даём шанс
+        // grace-периоду — та же логика, что уже используется для outOfRange/LOS
+        // в основном тике (см. losGraceTicks/LOS_GRACE_TICKS_MAX выше). Раньше
+        // это ветвление сбрасывало цель сразу, в обход grace, что приводило к
+        // более резкой потере цели через скан, чем через обычный per-tick путь.
+        if (prevUUID != null) {
+            Entity prevEntity = mainLevel.getEntity(prevUUID);
+            if (prevEntity == null && controllerSubLevel != null)
+                prevEntity = controllerSubLevel.getLevel().getEntity(prevUUID);
+
+            boolean hardLost = prevEntity == null || !prevEntity.isAlive()
+                    || !filterData.isAllowed(prevEntity)
+                    || filterData.isNearAlly(prevEntity, mainLevel);
+
+            if (!hardLost && ++losGraceTicks <= LOS_GRACE_TICKS_MAX) {
+                // Цель ещё валидна, просто временно не попала в скан-результат.
+                // Оставляем currentTargetUUID как есть, ничего не сбрасываем.
+                return;
+            }
+        }
+
+        currentTargetUUID = null;
+        confirmTicks      = 0;
+        alignedTicks      = 0;
+        losGraceTicks     = 0;
+        doCancelFire();
+        scanForCommanderTargets(scanLevel, mainLevel, worldCenter, muzzle);
     }
 
     private void scanForCommanderTargets(Level scanLevel, ServerLevel mainLevel, Vec3 worldCenter, Vec3 muzzle) {
