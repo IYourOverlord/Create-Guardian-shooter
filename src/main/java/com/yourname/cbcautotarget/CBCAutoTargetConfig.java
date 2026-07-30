@@ -36,7 +36,7 @@ public class CBCAutoTargetConfig {
         DEFAULT_GRAVITY         = BUILDER.defineInRange("default_gravity", -0.05, -1.0, 0.0);
         DEFAULT_DRAG            = BUILDER.defineInRange("default_drag", 0.0, 0.0, 1.0);
         BARREL_LENGTH           = BUILDER.defineInRange("barrel_length", 0.0, 0.0, 32.0);
-        MAX_RAYCAST_CANDIDATES  = BUILDER.defineInRange("max_raycast_candidates", 6, 1, 50);
+        MAX_RAYCAST_CANDIDATES  = BUILDER.defineInRange("max_raycast_candidates", 9, 1, 50);
         BUILDER.pop();
         SPEC = BUILDER.build();
     }
