@@ -11,6 +11,8 @@ import com.yourname.cbcautotarget.filter.TargetFilterData;
 import com.yourname.cbcautotarget.filter.WhitelistMode;
 import com.yourname.cbcautotarget.menu.MachineSoulMenu;
 import com.yourname.cbcautotarget.network.SyncMachineSoulStatusPacket;
+import dev.ryanhcode.sable.api.block.BlockEntitySubLevelActor;
+import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import net.createmod.catnip.data.Couple;
@@ -39,6 +41,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.network.PacketDistributor;
+import org.joml.Quaterniond;
+import org.joml.Vector3d;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,7 +51,7 @@ import java.util.*;
 
 import javax.annotation.Nullable;
 
-public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider {
+public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider, BlockEntitySubLevelActor {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MachineSoulBlockEntity.class);
 
@@ -483,6 +487,79 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider 
         }
         return local;
     }
+
+    // ── Gyroscope (roll stabiliser) ───────────────────────────────────────────
+    // Сила выравнивающего момента (Н·м·с за физ-тик).
+    // Подобрана так чтобы средний корабль выравнивался за ~0.5–1 с.
+    private static final double GYRO_TORQUE_STRENGTH  = 8.0;
+    // Коэффициент демпфирования угловой скорости вокруг оси forward.
+    // Гасит раскачку. 0 = нет демпфера, 1 = полное гашение за 1 тик.
+    private static final double GYRO_DAMPING_FACTOR    = 0.6;
+
+    /**
+     * Вызывается Sable каждый физический тик пока блок находится на sublevel.
+     * Реализует гироскоп: выравнивает крен (roll) корабля к горизонту
+     * относительно оси facing блока, не трогая yaw и pitch.
+     *
+     * Принцип:
+     *   1. Вычисляем мировой вектор «вправо» от текущей ориентации корабля
+     *      (локальная ось, перпендикулярная facing и мировому up).
+     *   2. Желаемый «вправо» = facing × worldUp (горизонталь, перп. носу).
+     *   3. Ось и величина коррекционного момента = cross(currentRight, desiredRight)
+     *      ограничен вдоль оси forward (только roll, не pitch/yaw).
+     *   4. Демпфер гасит угловую скорость по оси forward.
+     */
+    @Override
+    public void sable$physicsTick(ServerSubLevel subLevel, RigidBodyHandle handle, double timeStep) {
+        if (!targetSearchActive) return;          // блок выключен — гироскоп тоже
+        if (!handle.isValid()) return;
+
+        BlockState state = getBlockState();
+        Direction facing = state.hasProperty(MachineSoulBlock.FACING)
+                ? state.getValue(MachineSoulBlock.FACING)
+                : Direction.SOUTH;
+
+        // Локальный вектор «вперёд» блока в мировых координатах
+        Quaterniond orientation = new Quaterniond(subLevel.logicalPose().orientation());
+
+        // facing.getStepX/Y/Z — компоненты направления без зависимости от Vec3i/Vector3i
+        Vector3d localForward = new Vector3d(facing.getStepX(), facing.getStepY(), facing.getStepZ()).normalize();
+        // Переводим в мировые координаты через кватернион ориентации sublevel
+        Vector3d worldForward = orientation.transform(new Vector3d(localForward));
+
+        // Мировой up
+        Vector3d worldUp = new Vector3d(0.0, 1.0, 0.0);
+
+        // Текущий «вправо» корабля: forward × up (нормированный)
+        Vector3d currentRight = new Vector3d(worldForward).cross(worldUp).normalize();
+        if (currentRight.lengthSquared() < 1e-6) return; // forward почти вертикален — пропускаем
+
+        // Желаемый «вправо»: перпендикуляр к forward в горизонтальной плоскости
+        // = normalize(forward_horizontal × worldUp), где forward_horizontal — проекция на xz
+        Vector3d fwdHoriz = new Vector3d(worldForward.x, 0.0, worldForward.z);
+        if (fwdHoriz.lengthSquared() < 1e-6) return; // корабль смотрит строго вертикально
+        fwdHoriz.normalize();
+        Vector3d desiredRight = new Vector3d(fwdHoriz).cross(worldUp).normalize();
+
+        // Ось коррекции = cross(currentRight, desiredRight).
+        // Направлена вдоль worldForward если есть крен. Величина = sin(угол крена).
+        Vector3d correctionAxis = new Vector3d(currentRight).cross(desiredRight);
+
+        // Оставляем только компоненту вдоль worldForward (чистый roll, без yaw/pitch)
+        double rollComponent = correctionAxis.dot(worldForward);
+        Vector3d rollTorque = new Vector3d(worldForward).mul(rollComponent * GYRO_TORQUE_STRENGTH * timeStep);
+
+        // Демпфирование: гасим угловую скорость по оси worldForward
+        Vector3d angVel = handle.getAngularVelocity(new Vector3d());
+        double angVelRoll = angVel.dot(worldForward);
+        Vector3d dampingTorque = new Vector3d(worldForward).mul(-angVelRoll * GYRO_DAMPING_FACTOR);
+
+        Vector3d totalTorque = rollTorque.add(dampingTorque);
+        if (totalTorque.lengthSquared() < 1e-12) return;
+
+        handle.applyAngularImpulse(totalTorque);
+    }
+    // ── end gyroscope ─────────────────────────────────────────────────────────
 
     /**
      * Возвращает ServerLevel в котором нужно искать игроков.
