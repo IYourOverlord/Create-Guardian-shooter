@@ -163,7 +163,7 @@ public final class SableCompat {
      * Используется контроллером для обнаружения целей на чужих sublevel-кораблях
      * (блоки корабля не являются частью mainLevel, поэтому стандартный AABB-скан их не находит).
      */
-    public static <T extends LivingEntity> java.util.List<SubLevelEntityEntry<T>>
+    public static <T extends net.minecraft.world.entity.LivingEntity> java.util.List<SubLevelEntityEntry<T>>
             findLivingEntitiesInAllSubLevels(ServerLevel mainLevel, Vec3 worldCenter, int radius,
                                               Class<T> entityClass,
                                               java.util.function.Predicate<T> filter) {
