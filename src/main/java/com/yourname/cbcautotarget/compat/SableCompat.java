@@ -7,9 +7,11 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -154,6 +156,51 @@ public final class SableCompat {
         }
         return result;
     }
+
+    /**
+     * Ищет все живые сущности указанного типа во всех sublevel'ах, находящихся в радиусе
+     * от worldCenter. Аналог findCommandersInAllSubLevels для entity.
+     * Используется контроллером для обнаружения целей на чужих sublevel-кораблях
+     * (блоки корабля не являются частью mainLevel, поэтому стандартный AABB-скан их не находит).
+     */
+    public static <T extends LivingEntity> java.util.List<SubLevelEntityEntry<T>>
+            findLivingEntitiesInAllSubLevels(ServerLevel mainLevel, Vec3 worldCenter, int radius,
+                                              Class<T> entityClass,
+                                              java.util.function.Predicate<T> filter) {
+        java.util.List<SubLevelEntityEntry<T>> result = new java.util.ArrayList<>();
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(mainLevel);
+        if (container == null) return result;
+        double radiusSq = (double) radius * radius;
+        AABB box = new AABB(
+                worldCenter.x - radius, worldCenter.y - radius, worldCenter.z - radius,
+                worldCenter.x + radius, worldCenter.y + radius, worldCenter.z + radius);
+        for (ServerSubLevel ssl : container.getAllSubLevels()) {
+            if (ssl.isRemoved()) continue;
+            try {
+                Level subWorld = ssl.getLevel();
+                // Для AABB-скана нужен локальный бокс: преобразуем worldCenter в локальные координаты
+                Vec3 localCenter = worldToLocal(ssl, worldCenter);
+                AABB localBox = new AABB(
+                        localCenter.x - radius, localCenter.y - radius, localCenter.z - radius,
+                        localCenter.x + radius, localCenter.y + radius, localCenter.z + radius);
+                for (T entity : subWorld.getEntitiesOfClass(entityClass, localBox, e -> e.isAlive() && filter.test(e))) {
+                    // Переводим локальную позицию entity в мировые координаты для проверки дистанции
+                    Vec3 worldPos = toWorldPos(ssl, entity.position());
+                    if (worldPos.distanceToSqr(worldCenter) <= radiusSq) {
+                        result.add(new SubLevelEntityEntry<>(ssl, entity, worldPos));
+                    }
+                }
+            } catch (Exception e) {
+                LOGGER.warn("[findLivingEntitiesInAllSubLevels] Exception in SubLevel: {}", e.getMessage());
+            }
+        }
+        return result;
+    }
+
+    public record SubLevelEntityEntry<T extends net.minecraft.world.entity.Entity>(
+            ServerSubLevel subLevel,
+            T entity,
+            Vec3 worldPos) {}
 
     public record SubLevelCommanderEntry(
             ServerSubLevel subLevel,

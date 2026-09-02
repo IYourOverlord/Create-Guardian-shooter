@@ -115,6 +115,12 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
     @Nullable private BlockPos cannonMountPos     = null;
     @Nullable private UUID     currentTargetUUID  = null;
+    /**
+     * true если текущая entity-цель находится на sublevel-объекте (чужом корабле).
+     * В этом случае LOS через блоки не проверяется — цель видна сквозь стены корабля,
+     * аналогично тому как враждебный командер обнаруживается без LOS-check.
+     */
+    private boolean currentTargetOnSubLevel = false;
     @Nullable private UUID     ownContraptionUUID = null;
     @Nullable private BlockPos commanderPos       = null;
     @Nullable private BlockPos commanderTargetPos = null;
@@ -251,6 +257,16 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             Entity e = sl.getEntity(currentTargetUUID);
             if (e == null && controllerSubLevel != null)
                 e = controllerSubLevel.getLevel().getEntity(currentTargetUUID);
+            // Если цель на чужом sublevel — ищем её там
+            if (e == null && currentTargetOnSubLevel && SableCompat.isAvailable()) {
+                int sr = getScanRadius();
+                for (var entry : SableCompat.findLivingEntitiesInAllSubLevels(
+                        sl, tickWorldCenter, sr * 2, LivingEntity.class,
+                        en -> en.getUUID().equals(currentTargetUUID))) {
+                    e = entry.entity();
+                    break;
+                }
+            }
 
             int   r      = getScanRadius();
             ServerLevel main = mainLevel(level);
@@ -258,7 +274,10 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             // Дешёвые проверки — каждый тик (без raycast)
             boolean hardLost = e == null || !e.isAlive() || !filterData.isAllowed(e)
                     || (main != null && filterData.isNearAlly(e, main));
-            boolean outOfRange = !hardLost &&
+            // Для sublevel-цели position() — локальные координаты; конвертируем в мировые
+            // через findLivingEntitiesInAllSubLevels невозможно дёшево, поэтому
+            // при currentTargetOnSubLevel пропускаем outOfRange-проверку (grace обеспечит drop).
+            boolean outOfRange = !hardLost && !currentTargetOnSubLevel &&
                     e.distanceToSqr(tickWorldCenter) > (double) r * r;
 
             if (hardLost) {
@@ -266,8 +285,14 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             } else if (outOfRange) {
                 if (++losGraceTicks > LOS_GRACE_TICKS_MAX) dropEntityTarget(sl);
             } else {
-                // Дорогой LOS raycast — только раз в LOS_CHECK_INTERVAL тиков
-                if (++losCheckCounter >= LOS_CHECK_INTERVAL) {
+                // Дорогой LOS raycast — только раз в LOS_CHECK_INTERVAL тиков.
+                // Если цель находится на sublevel-корабле, LOS через блоки не проверяем:
+                // стены корабля-цели не являются частью мирового уровня, поэтому
+                // raycast всё равно их не «видит» — аналогично тому, как командер
+                // на sublevel обнаруживается без LOS-проверки.
+                if (currentTargetOnSubLevel) {
+                    losGraceTicks = 0; // цель на sublevel — всегда «видима»
+                } else if (++losCheckCounter >= LOS_CHECK_INTERVAL) {
                     losCheckCounter = 0;
                     boolean hasLos = controllerSubLevel != null
                             ? LineOfSightUtil.hasLineOfSightToEntityFromSubLevel(controllerSubLevel, tickMuzzlePos, e)
@@ -293,6 +318,15 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             Entity e = sl.getEntity(currentTargetUUID);
             if (e == null && controllerSubLevel != null)
                 e = controllerSubLevel.getLevel().getEntity(currentTargetUUID);
+            if (e == null && currentTargetOnSubLevel && SableCompat.isAvailable()) {
+                int sr = getScanRadius();
+                for (var entry : SableCompat.findLivingEntitiesInAllSubLevels(
+                        sl, tickWorldCenter, sr * 2, LivingEntity.class,
+                        en -> en.getUUID().equals(currentTargetUUID))) {
+                    e = entry.entity();
+                    break;
+                }
+            }
             if (e != null && e.isAlive()) aimAndFireAtEntity(sl, e, mount, tickMuzzlePos);
         }
 
@@ -473,10 +507,11 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     }
 
     private void dropEntityTarget(ServerLevel level) {
-        currentTargetUUID = null;
-        alignedTicks      = 0;
-        confirmTicks      = 0;
-        losGraceTicks     = 0;
+        currentTargetUUID    = null;
+        currentTargetOnSubLevel = false;
+        alignedTicks         = 0;
+        confirmTicks         = 0;
+        losGraceTicks        = 0;
         doCancelFire();
         // Инвалидируем кэш баллистики — цель сменилась
         entityAimCache       = null;
@@ -499,6 +534,19 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 mainLevel.getEntitiesOfClass(LivingEntity.class, worldBox,
                         e -> e.isAlive() && filterData.isAllowed(e)
                                 && !filterData.isNearAlly(e, mainLevel)));
+
+        // Дополнительно ищем живые entity во всех sublevel-кораблях.
+        // Сущности внутри sublevel'а находятся в его собственном Level и не видны
+        // через обычный mainLevel.getEntitiesOfClass — точно та же проблема,
+        // что и с командерами на кораблях (решена через findCommandersInAllSubLevels).
+        // Для таких целей LOS через блоки не проверяем (см. currentTargetOnSubLevel).
+        java.util.List<SableCompat.SubLevelEntityEntry<LivingEntity>> subLevelCandidates = new java.util.ArrayList<>();
+        if (SableCompat.isAvailable()) {
+            subLevelCandidates = SableCompat.findLivingEntitiesInAllSubLevels(
+                    mainLevel, worldCenter, radius, LivingEntity.class,
+                    e -> filterData.isAllowed(e) && !filterData.isNearAlly(e, mainLevel));
+        }
+
         Comparator<Entity> byThreatThenDistance = Comparator
                 .comparingInt((Entity e) -> filterData.isPriorityThreat(e) ? 0 : 1)
                 .thenComparingDouble(e -> e.distanceToSqr(worldCenter));
@@ -510,6 +558,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 ? candidates.subList(0, maxChecks) : candidates;
 
         Entity chosen = null;
+        boolean chosenOnSubLevel = false;
         for (Entity candidate : toCheck) {
             boolean los = (controllerSubLevel != null)
                     ? LineOfSightUtil.hasLineOfSightToEntityFromSubLevel(controllerSubLevel, muzzle, candidate)
@@ -517,11 +566,27 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             if (los) { chosen = candidate; break; }
         }
 
+        // Если в главном мире цель не найдена — ищем на sublevel-кораблях.
+        // LOS не проверяем: стены чужого корабля не блокируют наводку.
+        if (chosen == null && !subLevelCandidates.isEmpty()) {
+            subLevelCandidates.sort(Comparator
+                    .comparingInt((SableCompat.SubLevelEntityEntry<LivingEntity> e) ->
+                            filterData.isPriorityThreat(e.entity()) ? 0 : 1)
+                    .thenComparingDouble(e -> e.worldPos().distanceToSqr(worldCenter)));
+            int subChecks = Math.min(subLevelCandidates.size(), maxChecks);
+            for (int i = 0; i < subChecks; i++) {
+                chosen = subLevelCandidates.get(i).entity();
+                chosenOnSubLevel = true;
+                break;
+            }
+        }
+
         if (chosen != null) {
             if (chosen.getUUID().equals(currentTargetUUID)) {
                 confirmTicks = Math.min(confirmTicks + 1, 3);
             } else {
                 currentTargetUUID = chosen.getUUID();
+                currentTargetOnSubLevel = chosenOnSubLevel;
                 confirmTicks  = 1;
                 alignedTicks  = 0;
                 losGraceTicks = 0;
@@ -540,6 +605,15 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             Entity prevEntity = mainLevel.getEntity(prevUUID);
             if (prevEntity == null && controllerSubLevel != null)
                 prevEntity = controllerSubLevel.getLevel().getEntity(prevUUID);
+            // Ищем в sublevel-кораблях если цель была на одном из них
+            if (prevEntity == null && currentTargetOnSubLevel && SableCompat.isAvailable()) {
+                outer:
+                for (var entry : SableCompat.findLivingEntitiesInAllSubLevels(
+                        mainLevel, worldCenter, radius * 2, LivingEntity.class, e -> e.getUUID().equals(prevUUID))) {
+                    prevEntity = entry.entity();
+                    break outer;
+                }
+            }
 
             boolean hardLost = prevEntity == null || !prevEntity.isAlive()
                     || !filterData.isAllowed(prevEntity)
@@ -648,15 +722,45 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         ownContraptionUUID = c.getUUID();
 
         Vec3 muzzle    = computeRealMuzzlePos(c);
+        // Если цель на sublevel-корабле, её position() — локальные координаты.
+        // Конвертируем в мировые, переиспользуя worldPos из findLivingEntitiesInAllSubLevels.
         Vec3 rawTarget = target.position();
+        if (currentTargetOnSubLevel && SableCompat.isAvailable()) {
+            ServerLevel ml = mainLevel(level);
+            if (ml != null) {
+                for (var _entry : SableCompat.findLivingEntitiesInAllSubLevels(
+                        ml, muzzle, getScanRadius() * 2, LivingEntity.class,
+                        _e -> _e.getUUID().equals(currentTargetUUID))) {
+                    rawTarget = _entry.worldPos();
+                    break;
+                }
+            }
+        }
         double aimY    = rawTarget.y + target.getBbHeight() * 0.2;
         Vec3 targetPos = new Vec3(rawTarget.x, aimY, rawTarget.z);
 
         Vec3 platVel = getPlatformVelocity();
+        // Для sublevel-цели getDeltaMovement() — скорость в локальной системе корабля.
+        // Трансформируем в мировую (только вращение, без трансляции — это velocity).
+        Vec3 targetVel = target.getDeltaMovement();
+        if (currentTargetOnSubLevel && SableCompat.isAvailable()) {
+            ServerLevel ml = mainLevel(level);
+            if (ml != null) {
+                for (var _entry : SableCompat.findLivingEntitiesInAllSubLevels(
+                        ml, muzzle, getScanRadius() * 2, LivingEntity.class,
+                        _e -> _e.getUUID().equals(currentTargetUUID))) {
+                    // Скорость корабля в мировых координатах + локальная скорость entity
+                    Vec3 shipVel = SableCompat.getShipVelocity(_entry.subLevel());
+                    Vec3 wVel    = SableCompat.toWorldVelocity(_entry.subLevel(), targetVel);
+                    targetVel = wVel.add(shipVel);
+                    break;
+                }
+            }
+        }
         Vec3 relVel  = new Vec3(
-                target.getDeltaMovement().x - platVel.x,
-                target.getDeltaMovement().y - platVel.y,
-                target.getDeltaMovement().z - platVel.z);
+                targetVel.x - platVel.x,
+                targetVel.y - platVel.y,
+                targetVel.z - platVel.z);
 
         // ── Ballistic cache ───────────────────────────────────────────────────
         // Пересчёт только если ствол или цель сместились, скорость изменилась,
@@ -710,12 +814,32 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         if (yawOk && pitchOk && alignedTicks >= REQUIRED_ALIGNED_TICKS
                 && fireCooldown == 0 && confirmTicks >= 1) {
             Entity check = level.getEntity(currentTargetUUID);
-            ServerLevel ml = mainLevel(level);
-            boolean fireLos = (check != null) && ((controllerSubLevel != null)
-                    ? LineOfSightUtil.hasLineOfSightToEntityFromSubLevel(controllerSubLevel, muzzleWorldPos, check)
-                    : LineOfSightUtil.hasLineOfSightToEntity(ml, muzzleWorldPos, check));
+            // Если цель на sublevel — ищем её там
+            if (check == null && currentTargetOnSubLevel && SableCompat.isAvailable()) {
+                ServerLevel ml = mainLevel(level);
+                if (ml != null) {
+                    int r = getScanRadius();
+                    for (var entry : SableCompat.findLivingEntitiesInAllSubLevels(
+                            ml, muzzleWorldPos, r * 2, LivingEntity.class,
+                            e -> e.getUUID().equals(currentTargetUUID))) {
+                        check = entry.entity();
+                        break;
+                    }
+                }
+            }
+            // LOS перед выстрелом: для sublevel-цели не проверяем (стены корабля-цели
+            // не блокируют выстрел — аналогично логике commander-цели).
+            boolean fireLos;
+            if (currentTargetOnSubLevel) {
+                fireLos = check != null;
+            } else {
+                ServerLevel ml = mainLevel(level);
+                fireLos = (check != null) && ((controllerSubLevel != null)
+                        ? LineOfSightUtil.hasLineOfSightToEntityFromSubLevel(controllerSubLevel, muzzleWorldPos, check)
+                        : LineOfSightUtil.hasLineOfSightToEntity(ml, muzzleWorldPos, check));
+            }
             if (check == null || !check.isAlive() || !fireLos) {
-                currentTargetUUID = null; alignedTicks = 0; return;
+                currentTargetUUID = null; currentTargetOnSubLevel = false; alignedTicks = 0; return;
             }
             requestFire(level);
         }
@@ -1136,7 +1260,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             cmdAimCacheTarget = null;
             cmdAimCacheAge    = 0;
         }
-        currentTargetUUID  = null;
+        currentTargetUUID       = null;
+        currentTargetOnSubLevel = false;
         commanderTargetPos = null;
         alignedTicks  = 0;
         confirmTicks  = 0;

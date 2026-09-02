@@ -79,6 +79,7 @@ public class TargetFilterData {
         // ENEMY_CANNONS убраны — PitchOrientedContraptionEntity больше не цель
         if (entity instanceof Player player) {
             if (player.isSpectator()) return false;
+            if (player.isCreative()) return false;
             if (!isEnabled(TargetCategory.PLAYERS)) return false;
             if (whitelistEnabled) return !playerWhitelist.contains(player.getGameProfile().getName());
             return true;
