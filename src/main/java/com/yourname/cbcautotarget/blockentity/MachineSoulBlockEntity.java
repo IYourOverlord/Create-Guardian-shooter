@@ -530,7 +530,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider 
         // Все игроки в радиусе (спектаторов исключаем всегда)
         List<ServerPlayer> allPlayers = !targetPlayers ? List.of()
                 : searchLevel.getEntitiesOfClass(ServerPlayer.class, box,
-                p -> !p.isSpectator() && p.position().distanceTo(worldCenter) <= r);
+                p -> !p.isSpectator() && !p.isCreative() && p.position().distanceTo(worldCenter) <= r);
 
         // Разбиваем на «в списке» и «не в списке»
         List<ServerPlayer> inList  = new ArrayList<>();
