@@ -26,12 +26,7 @@ public final class CbcAutotargetAPI {
 
     private CbcAutotargetAPI() {}
 
-    /**
-     * Возвращает {@link IMachineSoul} для блока по позиции,
-     * или null если по этой позиции нет блока «Душа машины».
-     * <p>
-     * Вызывать только на серверной стороне.
-     */
+
     @Nullable
     public static IMachineSoul getMachineSoul(Level level, BlockPos pos) {
         if (level == null || pos == null) return null;
