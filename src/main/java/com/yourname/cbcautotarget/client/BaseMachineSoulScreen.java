@@ -299,6 +299,8 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
         if (button == 0 && isBackHovered((int)mx, (int)my)) {
+            // Back must commit the same data as Save/Exit before returning home.
+            onSaveClicked();
             PacketDistributor.sendToServer(new GoHomeMachineSoulPacket(blockPos));
             return true;
         }
