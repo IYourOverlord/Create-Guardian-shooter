@@ -156,7 +156,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // ── Состояние ─────────────────────────────────────────────────────────────
 
     private final Map<CommandRole, CommandSlot>  slots         = new EnumMap<>(CommandRole.class);
-    private final Map<CommandRole, ActiveSignal> activeSignals = new EnumMap<>(CommandRole.class);
+    private final Map<CommandRole, List<SignalRegistration>> activeSignals = new EnumMap<>(CommandRole.class);
 
     private final Set<UUID> viewingPlayers = new HashSet<>();
 
@@ -567,10 +567,6 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      * поэтому ищем тот уровень сервера где есть SubLevelContainer.
      * Если блок в обычном мире — возвращаем тот же sl.
      */
-    private ServerLevel getNetworkLevel(ServerLevel sl) {
-        return (!SableCompat.isAvailable() || cachedSubLevel == null) ? sl : getPlayerSearchLevel(sl);
-    }
-
     private ServerLevel getPlayerSearchLevel(ServerLevel sl) {
         if (!SableCompat.isAvailable() || cachedSubLevel == null) return sl;
         // Блок на SubLevel — ищем основной уровень через сервер
@@ -929,28 +925,38 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         Couple<Frequency> freq = slot.toFrequency();
         if (freq == null) return;
 
-        BlockPos signalPos = BlockPos.containing(getWorldCenter());
+        deactivateSignal(role);
+        List<SignalRegistration> registrations = new ArrayList<>();
 
-        ActiveSignal existing = activeSignals.get(role);
-        if (existing != null && existing.isAlive()) {
-            existing.updatePosition(signalPos);
-            return;
+        // Native/non-physical construction: use the level and local position of the Soul.
+        addSignalRegistration(registrations, sl, worldPosition, freq);
+
+        // Sable physical construction: also expose the same frequency in the mapped
+        // main-world network at the transformed position, where ordinary receivers
+        // outside the ship are located.
+        if (cachedSubLevel != null) {
+            ServerLevel mainLevel = getPlayerSearchLevel(sl);
+            if (mainLevel != sl) {
+                addSignalRegistration(registrations, mainLevel,
+                        BlockPos.containing(getWorldCenter()), freq);
+            }
         }
-        if (existing != null) {
-            Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(getNetworkLevel(sl), existing);
-            activeSignals.remove(role);
-        }
-        ActiveSignal signal = new ActiveSignal(signalPos, freq);
-        Create.REDSTONE_LINK_NETWORK_HANDLER.addToNetwork(getNetworkLevel(sl), signal);
-        activeSignals.put(role, signal);
+        activeSignals.put(role, registrations);
+    }
+
+    private void addSignalRegistration(List<SignalRegistration> registrations,
+                                       ServerLevel level, BlockPos pos, Couple<Frequency> freq) {
+        ActiveSignal signal = new ActiveSignal(pos, freq);
+        Create.REDSTONE_LINK_NETWORK_HANDLER.addToNetwork(level, signal);
+        registrations.add(new SignalRegistration(level, signal));
     }
 
     private void deactivateSignal(CommandRole role) {
-        ActiveSignal signal = activeSignals.remove(role);
-        if (signal == null) return;
-        signal.kill();
-        if (level instanceof ServerLevel sl) {
-            Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(getNetworkLevel(sl), signal);
+        List<SignalRegistration> registrations = activeSignals.remove(role);
+        if (registrations == null) return;
+        for (SignalRegistration registration : registrations) {
+            registration.signal.kill();
+            Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(registration.level, registration.signal);
         }
     }
 
@@ -983,7 +989,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             if (slot.isAssigned()) {
                 Couple<Frequency> freq = slot.toFrequency();
                 if (freq != null) {
-                    found = isLinkPresentInRadius(getNetworkLevel(sl), freq, LINK_SEARCH_RADIUS);
+                    found = isLinkPresentInRadius(sl, freq, LINK_SEARCH_RADIUS);
                 }
             }
             result.put(role, found);
@@ -1460,6 +1466,12 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     }
 
     // ── ActiveSignal ──────────────────────────────────────────────────────────
+
+    private static class SignalRegistration {
+        final ServerLevel level;
+        final ActiveSignal signal;
+        SignalRegistration(ServerLevel level, ActiveSignal signal) { this.level = level; this.signal = signal; }
+    }
 
     private static class ActiveSignal implements IRedstoneLinkable {
         private BlockPos pos;

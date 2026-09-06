@@ -37,7 +37,7 @@ public class MachineSoulHomeScreen extends AbstractContainerScreen<MachineSoulHo
         float targetPitch=Mth.clamp(((my-(ty+CY))/70f)*30f,-30f,30f);
         if(introTicks<12){introTicks++;guardianYaw=Mth.lerp(introTicks/12f,0f,target<0?-45f:45f);}else guardianYaw=Mth.lerp(.10f,guardianYaw,target);
         guardianPitch=Mth.lerp(.10f,guardianPitch,targetPitch);
-        MachineSoulGuiSupport.renderGuardian(g,MachineSoulGuiSupport.guardian(),lx+CX,ty+CY,21,guardianYaw,guardianPitch);
+        MachineSoulGuiSupport.renderGuardian(g,MachineSoulGuiSupport.guardian(),lx+CX,ty+CY,42,guardianYaw,guardianPitch);
         String title=Component.translatable("gui.cbc_autotarget.home.title").getString();g.drawCenteredString(font,title,lx+W/2,ty+6,0xFFE7F1F4);
         g.drawCenteredString(font,Component.literal("MACHINE SOUL").getString(),lx+CX,ty+24,0xFF71838A);
         drawToggle(g,lx+CX-32,ty+42,searchActive,"SEARCH",mx,my);
