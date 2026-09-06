@@ -228,6 +228,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
     private int scanCounter     = 0;
     private int guiCheckCounter = 0;
+    private int physicsScanCounter = 0;
 
     private boolean triggerSentThisCycle  = false;
     private boolean wasInSubLevelLastTick = false;
