@@ -31,6 +31,6 @@ final class MachineSoulGuiSupport {
         float pitchRad = pitch * Mth.DEG_TO_RAD;
         InventoryScreen.renderEntityInInventoryFollowsAngle(
                 g, cx - size, cy - size, cx + size, cy + size,
-                size, 0.5f, Mth.sin(yawRad), -Mth.sin(pitchRad), entity);
+                size, 0.25f, Mth.sin(yawRad), -Mth.sin(pitchRad), entity);
     }
 }
