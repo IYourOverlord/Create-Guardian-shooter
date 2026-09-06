@@ -514,6 +514,15 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         if (!targetSearchActive) return;          // блок выключен — гироскоп тоже
         if (!handle.isValid()) return;
 
+        // The embedded Sable level is the level that owns Redstone Links on a
+        // physical construction. Run the same scan from the Sable actor tick;
+        // relying only on the vanilla ticker leaves a newly placed Soul inert.
+        if (++physicsScanCounter >= SCAN_INTERVAL
+                && subLevel.getLevel() instanceof ServerLevel physicsLevel) {
+            physicsScanCounter = 0;
+            doScan(physicsLevel, worldPosition, getBlockState());
+        }
+
         BlockState state = getBlockState();
         Direction facing = state.hasProperty(MachineSoulBlock.FACING)
                 ? state.getValue(MachineSoulBlock.FACING)
