@@ -29,8 +29,14 @@ final class MachineSoulGuiSupport {
 
         float yawRad = yaw * Mth.DEG_TO_RAD;
         float pitchRad = pitch * Mth.DEG_TO_RAD;
+        // Keep the 42px clipping frame, but render the guardian at one quarter of
+        // that model scale. These values must not be conflated: the first
+        // four coordinates define the window, while the fifth controls the
+        // entity size.
+        final int frame = size;
+        final int modelSize = Math.max(1, Math.round(size * 0.25f));
         InventoryScreen.renderEntityInInventoryFollowsAngle(
-                g, cx - size, cy - size, cx + size, cy + size,
-                size, 0.25f, Mth.sin(yawRad), -Mth.sin(pitchRad), entity);
+                g, cx - frame, cy - frame, cx + frame, cy + frame,
+                modelSize, 1.0f, Mth.sin(yawRad), -Mth.sin(pitchRad), entity);
     }
 }
