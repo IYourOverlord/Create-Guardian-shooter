@@ -8,6 +8,7 @@ import net.minecraft.world.entity.monster.ElderGuardian;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.Level;
 import java.lang.reflect.Method;
+import net.minecraft.util.Mth;
 
 /** Vanilla entity renderer helper. Uses the angle overload so the entity stays fixed. */
 final class MachineSoulGuiSupport {
@@ -25,8 +26,11 @@ final class MachineSoulGuiSupport {
                 if (!m.getName().equals("renderEntityInInventoryFollowsAngle")) continue;
                 m.setAccessible(true);
                 // 1.21.1: graphics, x1, y1, x2, y2, size, scale, angleX, angleY, entity
+                float radians = yaw * ((float)Math.PI / 180f);
+                float angleX = Mth.sin(radians);
+                float angleY = Mth.cos(radians);
                 m.invoke(null, g, cx - size, cy - size, cx + size, cy + size,
-                        size, 1.0f, 0.0f, yaw, entity);
+                        size, 1.0f, angleX, angleY, entity);
                 return;
             }
         } catch (Throwable ignored) { }

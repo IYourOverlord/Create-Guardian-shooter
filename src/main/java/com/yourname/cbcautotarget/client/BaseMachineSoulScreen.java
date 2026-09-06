@@ -37,7 +37,7 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
         extends AbstractContainerScreen<M> {
 
     // ── Фиксированные размеры ─────────────────────────────────────────────────
-    protected static final int GUI_W       = 260;
+    protected static final int GUI_W       = 300;
     protected static final int PAD         = 6;
     protected static final int SLOT_SIZE   = 18;
 
@@ -195,8 +195,8 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
 
     protected void drawBackButton(GuiGraphics g, int lx, int ty, int mx, int my) {
         boolean hov = isBackHovered(mx, my);
-        int bx = lx + 24;
-        int by = ty + 122;
+        int bx = lx + 8;
+        int by = ty + 2;
 
         g.fill(bx, by, bx + BACK_W, by + BTN_H,
                 hov ? COL_BACK_HOVER_BG : COL_BACK_BG);
@@ -212,15 +212,15 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     }
 
     protected boolean isBackHovered(int mx, int my) {
-        return mx >= leftPos + 24 && mx < leftPos + 24 + BACK_W
-                && my >= topPos + 122 && my < topPos + 122 + BTN_H;
+        return mx >= leftPos + 8 && mx < leftPos + 8 + BACK_W
+                && my >= topPos + 2 && my < topPos + 2 + BTN_H;
     }
 
     // ── Кнопка Save ──────────────────────────────────────────────────────────
 
     protected void drawSaveButton(GuiGraphics g, int lx, int ty, int mx, int my) {
-        int bx = lx + 198;
-        int by = ty + 122;
+        int bx = lx + 254;
+        int by = ty + 2;
         boolean hov = mx >= bx && mx < bx + SAVE_W && my >= by && my < by + SAVE_H;
 
         g.fill(bx, by, bx + SAVE_W, by + SAVE_H, hov ? COL_SAVE_HOVER_BG : COL_SAVE_BG);
@@ -235,8 +235,8 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     }
 
     protected boolean isSaveHovered(int mx, int my) {
-        int bx = leftPos + 198;
-        int by = topPos + 122;
+        int bx = leftPos + 254;
+        int by = topPos + 2;
         return mx >= bx && mx < bx + SAVE_W && my >= by && my < by + SAVE_H;
     }
 
@@ -251,14 +251,14 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     protected boolean showGuardian() { return true; }
 
     protected void drawGuardian(GuiGraphics g, int lx, int ty, int mx, int my) {
-        int cx = lx + 90;
+        int cx = lx + 150;
         int cy = ty + 88;
         if (!guardianStarted) {
             guardianStarted = true;
             guardianStartYaw = 0f;
             guardianStartTicks = 0;
         }
-        float target = Mth.clamp(((mx - cx) / 42f) * 45f, -45f, 45f);
+        float target = -Mth.clamp(((mx - cx) / 70f) * 45f, -45f, 45f);
         if (guardianStartTicks < 12) {
             guardianStartTicks++;
             float direction = target < 0 ? -1f : 1f;
@@ -266,7 +266,7 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
         } else {
             guardianYaw = Mth.lerp(0.10f, guardianYaw, target);
         }
-        MachineSoulGuiSupport.renderGuardian(g, MachineSoulGuiSupport.guardian(), cx, cy, 24, guardianYaw);
+        MachineSoulGuiSupport.renderGuardian(g, MachineSoulGuiSupport.guardian(), cx, cy, 42, guardianYaw);
     }
 
     // ── Утилиты ───────────────────────────────────────────────────────────────

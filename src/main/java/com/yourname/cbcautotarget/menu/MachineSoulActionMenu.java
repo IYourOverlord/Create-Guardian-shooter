@@ -39,7 +39,7 @@ public class MachineSoulActionMenu extends AbstractContainerMenu {
     public static final int SLOT_OFFSET = 0;
     public static final int INV_X       = 8;
     // FIRE_ROW_BOTTOM=88; INV_Y_BASE=88+4=92
-    public static final int INV_Y_BASE  = 92;
+    public static final int INV_Y_BASE  = 155;
 
     // FIRE — единственная строка на этой вкладке
     public static final int FIRE_ROW_Y  = FIRST_ROW_Y;
