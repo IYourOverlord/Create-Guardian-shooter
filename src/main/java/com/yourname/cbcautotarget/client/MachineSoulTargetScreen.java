@@ -315,6 +315,9 @@ public class MachineSoulTargetScreen extends BaseMachineSoulScreen<MachineSoulTa
 
     /** Название вкладки в шапке — переопределяем на "Target Filter" в режиме фильтра. */
     @Override
+    protected boolean showGuardian() { return !filterMode; }
+
+    @Override
     protected String getTabTitle() {
         return filterMode
                 ? "🎯  " + Component.translatable("gui.cbc_autotarget.filter.title").getString()
@@ -343,87 +346,34 @@ public class MachineSoulTargetScreen extends BaseMachineSoulScreen<MachineSoulTa
     // ── Переключатель ──────────────────────────────────────────────────────────
 
     private void drawTargetToggle(GuiGraphics g, int lx, int ty, int mx, int my) {
-        int x = lx + PAD;
-        int y = ty + TOGGLE_Y;
-        int w = GUI_W - PAD * 2;
-        int h = TOGGLE_H;
-
-        boolean hov = isToggleHovered(mx, my);
-
-        int bg     = targetPlayers ? COL_TOGGLE_ON_BG  : COL_TOGGLE_OFF_BG;
-        int border = targetPlayers
-                ? (hov ? COL_TOGGLE_ON_BORDER_HOVER  : COL_TOGGLE_ON_BORDER)
-                : (hov ? COL_TOGGLE_OFF_BORDER_HOVER : COL_TOGGLE_OFF_BORDER);
-        int textCol = targetPlayers ? COL_TOGGLE_ON_TEXT : COL_TOGGLE_OFF_TEXT;
-
-        g.fill(x, y, x + w, y + h, bg);
-        drawBorder(g, x, y, w, h, border);
-
-        int dotR  = 3;
-        int dotCx = x + 10;
-        int dotCy = y + h / 2;
-        g.fill(dotCx - dotR, dotCy - dotR, dotCx + dotR, dotCy + dotR,
-                targetPlayers ? COL_TOGGLE_DOT_ON : COL_TOGGLE_DOT_OFF);
-
-        String label = Component.translatable("gui.cbc_autotarget.soul.tab.target.toggle").getString()
-                + ": "
-                + (targetPlayers
-                ? Component.translatable("gui.cbc_autotarget.soul.tab.target.toggle.on").getString()
-                : Component.translatable("gui.cbc_autotarget.soul.tab.target.toggle.off").getString());
-        g.drawString(font, label, x + 10 + dotR + 6, y + (h - font.lineHeight) / 2, textCol, false);
+        int x = lx + 135, y = ty + 44, w = 78, h = 20;
+        boolean hov = mx >= x && mx < x+w && my >= y && my < y+h;
+        g.fill(x,y,x+w,y+h,targetPlayers ? COL_TOGGLE_ON_BG : COL_TOGGLE_OFF_BG);
+        drawBorder(g,x,y,w,h,hov ? COL_ACCENT2 : (targetPlayers ? COL_TOGGLE_ON_BORDER : COL_TOGGLE_OFF_BORDER));
+        g.drawCenteredString(font, targetPlayers ? "PLAYERS ON" : "PLAYERS OFF", x+w/2, y+6,
+                targetPlayers ? COL_TOGGLE_ON_TEXT : COL_TOGGLE_OFF_TEXT);
     }
 
     private boolean isToggleHovered(int mx, int my) {
-        int x = leftPos + PAD;
-        int y = topPos + TOGGLE_Y;
-        int w = GUI_W - PAD * 2;
-        int h = TOGGLE_H;
-        return mx >= x && mx < x + w && my >= y && my < y + h;
+        int x=leftPos+135, y=topPos+44;
+        return mx>=x && mx<x+78 && my>=y && my<y+20;
     }
 
     // ── Кнопка фильтра (категории + вайтлист игроков + командеры) ───────────────
 
     private void drawFilterButton(GuiGraphics g, int lx, int ty, int mx, int my) {
-        int x = lx + PAD;
-        int y = ty + FILTER_BTN_Y;
-        int w = GUI_W - PAD * 2;
-        int h = FILTER_BTN_H;
-
-        boolean hov = isFilterBtnHovered(mx, my);
-
-        int bg     = hov ? COL_FILTER_BG_HOV : COL_FILTER_BG;
-        int border = hov ? COL_FILTER_BORDER_HOV : COL_FILTER_BORDER;
-
-        g.fill(x, y, x + w, y + h, bg);
-        drawBorder(g, x, y, w, h, border);
-
-        // Иконка ▶ слева
-        int iconX = x + 8;
-        int iconY = y + (h - font.lineHeight) / 2;
-        g.drawString(font, "▶", iconX, iconY, COL_FILTER_TEXT, false);
-
-        // Текст
-        String label = Component.translatable("gui.cbc_autotarget.soul.tab.target.player_filter").getString();
-        int textX = iconX + font.width("▶") + 4;
-        g.drawString(font, label, textX, iconY, COL_FILTER_TEXT, false);
-
-        // Счётчик вайтлиста справа
-        var filter = menu.getPlayerFilterData();
-        if (filter.isWhitelistEnabled()) {
-            String counter = filter.getWhitelist().size() + " names";
-            g.drawString(font, counter, x + w - font.width(counter) - 6, iconY, COL_TEXT_DIM, false);
-        } else {
-            String status = Component.translatable("gui.cbc_autotarget.soul.tab.target.player_filter.all").getString();
-            g.drawString(font, status, x + w - font.width(status) - 6, iconY, COL_TEXT_DIM, false);
-        }
+        int x=lx+165, y=ty+78, w=78, h=20; boolean hov=mx>=x&&mx<x+w&&my>=y&&my<y+h;
+        g.fill(x,y,x+w,y+h,hov?COL_FILTER_BG_HOV:COL_FILTER_BG);
+        drawBorder(g,x,y,w,h,hov?COL_FILTER_BORDER_HOV:COL_FILTER_BORDER);
+        g.drawCenteredString(font,"FILTER",x+w/2,y+6,hov?COL_FILTER_TEXT:COL_TEXT);
+        var f=menu.getPlayerFilterData();
+        String status=f.isWhitelistEnabled()?f.getWhitelist().size()+" names":"ALL";
+        g.drawString(font,status,x+w+4,y+6,COL_TEXT_DIM,false);
+        if(hov)g.renderTooltip(font,Component.literal("Open target category and commander filters"),mx,my);
     }
 
     private boolean isFilterBtnHovered(int mx, int my) {
-        int x = leftPos + PAD;
-        int y = topPos + FILTER_BTN_Y;
-        int w = GUI_W - PAD * 2;
-        int h = FILTER_BTN_H;
-        return mx >= x && mx < x + w && my >= y && my < y + h;
+        int x=leftPos+165,y=topPos+78; return mx>=x&&mx<x+78&&my>=y&&my<y+20;
     }
 
     // ── Клики ─────────────────────────────────────────────────────────────────

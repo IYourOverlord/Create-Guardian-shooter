@@ -540,7 +540,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         // через обычный mainLevel.getEntitiesOfClass — точно та же проблема,
         // что и с командерами на кораблях (решена через findCommandersInAllSubLevels).
         // Для таких целей LOS через блоки не проверяем (см. currentTargetOnSubLevel).
-        java.util.List<SableCompat.SubLevelEntityEntry<LivingEntity>> subLevelCandidates = new java.util.ArrayList<>();
+        List<SableCompat.SubLevelEntityEntry<LivingEntity>> subLevelCandidates = new ArrayList<>();
         if (SableCompat.isAvailable()) {
             subLevelCandidates = SableCompat.findLivingEntitiesInAllSubLevels(
                     mainLevel, worldCenter, radius, LivingEntity.class,

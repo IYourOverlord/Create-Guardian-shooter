@@ -4,6 +4,7 @@ import com.yourname.cbcautotarget.blockentity.MachineSoulBlockEntity.Tab;
 import com.yourname.cbcautotarget.network.GoHomeMachineSoulPacket;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.util.Mth;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Inventory;
@@ -36,7 +37,7 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
         extends AbstractContainerScreen<M> {
 
     // ── Фиксированные размеры ─────────────────────────────────────────────────
-    protected static final int GUI_W       = 200;
+    protected static final int GUI_W       = 260;
     protected static final int PAD         = 6;
     protected static final int SLOT_SIZE   = 18;
 
@@ -94,6 +95,10 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     protected final Tab activeTab;
     protected final BlockPos blockPos;
     protected final int guiH;
+    private float guardianYaw = 0f;
+    private float guardianStartYaw = 0f;
+    private int guardianStartTicks = 0;
+    private boolean guardianStarted = false;
 
     protected BaseMachineSoulScreen(M menu, Inventory inv, Component title,
                                     Tab activeTab, BlockPos blockPos, int guiH) {
@@ -166,10 +171,13 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
         int contentBottom = ty + (isInventoryHidden() ? guiH - 4 : getInvYBase() - 4);
         g.fill(lx + 1, ty + CONTENT_TOP, lx + GUI_W - 1, contentBottom, COL_CONTENT_BG);
 
-        // 7. Контент вкладки
+        // 7. Древний страж — общий фокус нового интерфейса
+        if (showGuardian()) drawGuardian(g, lx, ty, mx, my);
+
+        // 8. Контент вкладки
         renderContent(g, lx, ty, mx, my);
 
-        // 8. Инвентарь (пропускается, если наследник его скрыл)
+        // 9. Инвентарь (пропускается, если наследник его скрыл)
         if (!isInventoryHidden()) {
             renderInventoryBg(g, lx, ty);
         }
@@ -243,6 +251,28 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     protected void drawSlotBg(GuiGraphics g, int x, int y) {
         g.fill(x - 1, y - 1, x + SLOT_SIZE + 1, y + SLOT_SIZE + 1, COL_SLOT_FR);
         g.fill(x, y, x + SLOT_SIZE, y + SLOT_SIZE, COL_SLOT_BG);
+    }
+
+
+    protected boolean showGuardian() { return true; }
+
+    protected void drawGuardian(GuiGraphics g, int lx, int ty, int mx, int my) {
+        int cx = lx + 72;
+        int cy = ty + 88;
+        if (!guardianStarted) {
+            guardianStarted = true;
+            guardianStartYaw = 0f;
+            guardianStartTicks = 0;
+        }
+        float target = Mth.clamp(((mx - cx) / 42f) * 45f, -45f, 45f);
+        if (guardianStartTicks < 12) {
+            guardianStartTicks++;
+            float direction = target < 0 ? -1f : 1f;
+            guardianYaw = Mth.lerp(guardianStartTicks / 12f, 0f, direction * 45f);
+        } else {
+            guardianYaw = Mth.lerp(0.10f, guardianYaw, target);
+        }
+        MachineSoulGuiSupport.renderGuardian(g, MachineSoulGuiSupport.guardian(), cx, cy, 38, guardianYaw, 0f);
     }
 
     // ── Утилиты ───────────────────────────────────────────────────────────────
