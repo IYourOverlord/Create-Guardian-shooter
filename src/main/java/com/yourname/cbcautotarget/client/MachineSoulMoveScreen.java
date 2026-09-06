@@ -31,5 +31,5 @@ public class MachineSoulMoveScreen extends BaseMachineSoulScreen<MachineSoulMove
         }
         // Navigation is drawn by BaseMachineSoulScreen at header level.
     }
-    @Override protected boolean onSaveClicked(){Map<CommandRole,ItemStack[]> map=new LinkedHashMap<>();for(int r=0;r<6;r++)map.put(MachineSoulMoveMenu.MOVE_ROLES[r],new ItemStack[]{menu.getFreqItem(r*2).copy(),menu.getFreqItem(r*2+1).copy()});PacketDistributor.sendToServer(new SaveMachineSoulMovePacket(blockPos,map));onClose();return true;}
+    @Override protected boolean onSaveClicked(){Map<CommandRole,ItemStack[]> map=new LinkedHashMap<>();for(int r=0;r<6;r++)map.put(MachineSoulMoveMenu.MOVE_ROLES[r],new ItemStack[]{menu.slots.get(r*2).getItem().copy(),menu.slots.get(r*2+1).getItem().copy()});PacketDistributor.sendToServer(new SaveMachineSoulMovePacket(blockPos,map));onClose();return true;}
 }

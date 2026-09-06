@@ -110,9 +110,9 @@ public class MachineSoulActionMenu extends AbstractContainerMenu {
         if (slotId >= 0 && slotId < FREQ_SLOTS) {
             ItemStack carried = getCarried();
             if (carried.isEmpty() || type == ClickType.PICKUP && button == 1)
-                slots.get(slotId).set(ItemStack.EMPTY);
+                setFreqItem(slotId, ItemStack.EMPTY);
             else
-                slots.get(slotId).set(carried);
+                setFreqItem(slotId, carried);
             return;
         }
         super.clicked(slotId, button, type, player);
@@ -124,7 +124,7 @@ public class MachineSoulActionMenu extends AbstractContainerMenu {
         Slot s = slots.get(index);
         if (!s.hasItem()) return ItemStack.EMPTY;
         for (int i = 0; i < FREQ_SLOTS; i++) {
-            if (!slots.get(i).hasItem()) { slots.get(i).set(s.getItem()); return ItemStack.EMPTY; }
+            if (!slots.get(i).hasItem()) { setFreqItem(i, s.getItem()); return ItemStack.EMPTY; }
         }
         return ItemStack.EMPTY;
     }

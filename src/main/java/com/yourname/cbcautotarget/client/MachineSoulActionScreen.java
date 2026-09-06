@@ -21,5 +21,5 @@ public class MachineSoulActionScreen extends BaseMachineSoulScreen<MachineSoulAc
         int x=lx+CELL_X,y=ty+CELL_Y;g.drawCenteredString(font,"FIRE",x+19,y-10,COL_TEXT_DIM);drawSlotBg(g,x,y);drawSlotBg(g,x+22,y);
         if(mx>=x&&mx<x+38&&my>=y&&my<y+18)g.renderTooltip(font,Component.literal("FIRE Redstone Link frequencies"),mx,my);
     }
-    @Override protected boolean onSaveClicked(){PacketDistributor.sendToServer(new SaveMachineSoulActionPacket(blockPos,menu.getFreqItem(0).copy(),menu.getFreqItem(1).copy()));onClose();return true;}
+    @Override protected boolean onSaveClicked(){PacketDistributor.sendToServer(new SaveMachineSoulActionPacket(blockPos,menu.slots.get(0).getItem().copy(),menu.slots.get(1).getItem().copy()));onClose();return true;}
 }
