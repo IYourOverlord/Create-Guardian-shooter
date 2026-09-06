@@ -269,7 +269,7 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
             guardianYaw = Mth.lerp(0.10f, guardianYaw, target);
         }
         guardianPitch = Mth.lerp(0.10f, guardianPitch, targetPitch);
-        MachineSoulGuiSupport.renderGuardian(g, MachineSoulGuiSupport.guardian(), cx, cy, 42, guardianYaw, guardianPitch);
+        MachineSoulGuiSupport.renderGuardian(g, MachineSoulGuiSupport.guardian(), cx, cy, 21, guardianYaw, guardianPitch);
     }
 
     // ── Утилиты ───────────────────────────────────────────────────────────────

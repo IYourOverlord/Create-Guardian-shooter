@@ -567,6 +567,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      * поэтому ищем тот уровень сервера где есть SubLevelContainer.
      * Если блок в обычном мире — возвращаем тот же sl.
      */
+    private ServerLevel getNetworkLevel(ServerLevel sl) {
+        return (!SableCompat.isAvailable() || cachedSubLevel == null) ? sl : getPlayerSearchLevel(sl);
+    }
+
     private ServerLevel getPlayerSearchLevel(ServerLevel sl) {
         if (!SableCompat.isAvailable() || cachedSubLevel == null) return sl;
         // Блок на SubLevel — ищем основной уровень через сервер
@@ -933,11 +937,11 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             return;
         }
         if (existing != null) {
-            Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(sl, existing);
+            Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(getNetworkLevel(sl), existing);
             activeSignals.remove(role);
         }
         ActiveSignal signal = new ActiveSignal(signalPos, freq);
-        Create.REDSTONE_LINK_NETWORK_HANDLER.addToNetwork(sl, signal);
+        Create.REDSTONE_LINK_NETWORK_HANDLER.addToNetwork(getNetworkLevel(sl), signal);
         activeSignals.put(role, signal);
     }
 
@@ -946,7 +950,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         if (signal == null) return;
         signal.kill();
         if (level instanceof ServerLevel sl) {
-            Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(sl, signal);
+            Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(getNetworkLevel(sl), signal);
         }
     }
 
@@ -979,7 +983,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             if (slot.isAssigned()) {
                 Couple<Frequency> freq = slot.toFrequency();
                 if (freq != null) {
-                    found = isLinkPresentInRadius(sl, freq, LINK_SEARCH_RADIUS);
+                    found = isLinkPresentInRadius(getNetworkLevel(sl), freq, LINK_SEARCH_RADIUS);
                 }
             }
             result.put(role, found);
