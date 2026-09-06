@@ -97,7 +97,6 @@ public class MachineSoulTargetMenu extends AbstractContainerMenu {
         this.commanderFilterData.replaceFriendlyIds(new ArrayList<>(be.getCommanderFilterData().getFriendlyIds()));
         LOGGER.info("[TargetMenu] SERVER constructor pos={} be.mask={} this.playerFilterData.mask(after ctor)={} be.targetPlayers={}",
                 blockPos, be.getPlayerFilterData().getMask(), this.playerFilterData.getMask(), this.targetPlayers);
-        addPlayerInventory(inv);
     }
 
     private void addPlayerInventory(Inventory inv) {

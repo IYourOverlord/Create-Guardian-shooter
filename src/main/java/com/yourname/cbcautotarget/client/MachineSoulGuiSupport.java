@@ -1,62 +1,34 @@
 package com.yourname.cbcautotarget.client;
 
-import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.ElderGuardian;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.Level;
-import net.minecraft.util.Mth;
-
 import java.lang.reflect.Method;
 
-/** Shared presentation helpers for the Machine Soul radial interface. */
+/** Vanilla entity renderer helper. Uses the angle overload so the entity stays fixed. */
 final class MachineSoulGuiSupport {
     private MachineSoulGuiSupport() {}
-
     static ElderGuardian guardian() {
         Level level = Minecraft.getInstance().level;
         return level == null ? null : new ElderGuardian(EntityType.ELDER_GUARDIAN, level);
     }
-
-    /**
-     * Uses the vanilla inventory renderer without binding to a version-specific
-     * overload at compile time. This keeps the mod compatible with the 1.21.1
-     * NeoForge mappings used by the project.
-     */
-    static void renderGuardian(GuiGraphics g, ElderGuardian entity, int cx, int cy,
-                               int scale, float yaw, float pitch) {
+    static void renderGuardian(GuiGraphics g, ElderGuardian entity, int cx, int cy, int size, float yaw) {
         if (entity == null) return;
+        entity.setYRot(yaw); entity.setYBodyRot(yaw); entity.setYHeadRot(yaw);
+        entity.yRotO = yaw; entity.yBodyRotO = yaw; entity.yHeadRotO = yaw;
         try {
             for (Method m : InventoryScreen.class.getDeclaredMethods()) {
-                if (!m.getName().equals("renderEntityInInventoryFollowsMouse")) continue;
-                Class<?>[] p = m.getParameterTypes();
-                if (p.length == 8) {
-                    m.setAccessible(true);
-                    m.invoke(null, g, cx - scale, cy - scale, cx + scale, cy + scale,
-                            scale, yaw, pitch, entity);
-                    return;
-                }
-                if (p.length == 9) {
-                    m.setAccessible(true);
-                    m.invoke(null, g, cx - scale, cy - scale, cx + scale, cy + scale,
-                            scale, 0f, yaw, pitch, entity);
-                    return;
-                }
+                if (!m.getName().equals("renderEntityInInventoryFollowsAngle")) continue;
+                m.setAccessible(true);
+                // 1.21.1: graphics, x1, y1, x2, y2, size, scale, angleX, angleY, entity
+                m.invoke(null, g, cx - size, cy - size, cx + size, cy + size,
+                        size, 1.0f, 0.0f, yaw, entity);
+                return;
             }
-        } catch (ReflectiveOperationException ignored) {
-            // A missing overload should not break the GUI; the surrounding UI remains usable.
-        }
-    }
-
-    static int radialX(int cx, int cy, int index, int count, int radius) {
-        double a = -Math.PI / 2.0 + Math.PI * index / Math.max(1, count - 1);
-        return cx + (int) Math.round(Math.cos(a) * radius);
-    }
-
-    static int radialY(int cx, int cy, int index, int count, int radius) {
-        double a = -Math.PI / 2.0 + Math.PI * index / Math.max(1, count - 1);
-        return cy + (int) Math.round(Math.sin(a) * radius);
+        } catch (Throwable ignored) { }
     }
 }

@@ -62,30 +62,30 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     protected static final int CONTENT_TOP = HEADER_H + 1;           // 17
 
     // ── Палитра ───────────────────────────────────────────────────────────────
-    protected static final int COL_BG            = 0xE0080F08;
-    protected static final int COL_BORDER        = 0xFF1A4A1A;
-    protected static final int COL_HEADER_BG     = 0xFF0A1F0A;
-    protected static final int COL_HEADER_SEP    = 0xFF2A6B2A;
-    protected static final int COL_CONTENT_BG    = 0xFF0D2B0D;
-    protected static final int COL_ROW_EVEN      = 0xFF0F320F;
-    protected static final int COL_ROW_ODD       = 0xFF0A250A;
-    protected static final int COL_TEXT          = 0xFFAADDAA;
-    protected static final int COL_TEXT_DIM      = 0xFF5A8A5A;
-    protected static final int COL_TITLE         = 0xFFCCFFCC;
-    protected static final int COL_ACCENT        = 0xFF44BB44;
-    protected static final int COL_ACCENT2       = 0xFF33FF88;
-    protected static final int COL_SLOT_BG       = 0xFF0A200A;
-    protected static final int COL_SLOT_FR       = 0xFF2A6B2A;
+    protected static final int COL_BG            = 0x00121519;
+    protected static final int COL_BORDER        = 0x0033424A;
+    protected static final int COL_HEADER_BG     = 0x00161D22;
+    protected static final int COL_HEADER_SEP    = 0x0049616B;
+    protected static final int COL_CONTENT_BG    = 0x001B2429;
+    protected static final int COL_ROW_EVEN      = 0xFF202B31;
+    protected static final int COL_ROW_ODD       = 0xFF182126;
+    protected static final int COL_TEXT          = 0xFFB8C9CE;
+    protected static final int COL_TEXT_DIM      = 0xFF71838A;
+    protected static final int COL_TITLE         = 0xFFE7F1F4;
+    protected static final int COL_ACCENT        = 0xFF56C7D9;
+    protected static final int COL_ACCENT2       = 0xFF8DE8F2;
+    protected static final int COL_SLOT_BG       = 0xFF12191D;
+    protected static final int COL_SLOT_FR       = 0xFF49616B;
     protected static final int COL_INV_LABEL     = 0xFF4A7A4A;
-    protected static final int COL_SAVE_BG       = 0xFF0F4A1A;
-    protected static final int COL_SAVE_BORDER   = 0xFF33BB44;
-    protected static final int COL_SAVE_TEXT     = 0xFFAAFFBB;
-    protected static final int COL_SAVE_HOVER_BG = 0xFF1A6B28;
-    protected static final int COL_BACK_BG       = 0xFF0A1F0A;
-    protected static final int COL_BACK_BORDER   = 0xFF2A6B2A;
-    protected static final int COL_BACK_HOVER_BG = 0xFF153515;
-    protected static final int COL_LINK_OK       = 0xFF33FF55;
-    protected static final int COL_LINK_MISS     = 0xFF1A4A1A;
+    protected static final int COL_SAVE_BG       = 0xFF263A42;
+    protected static final int COL_SAVE_BORDER   = 0xFF57C9D9;
+    protected static final int COL_SAVE_TEXT     = 0xFFD7F7FA;
+    protected static final int COL_SAVE_HOVER_BG = 0xFF315660;
+    protected static final int COL_BACK_BG       = 0xFF161D22;
+    protected static final int COL_BACK_BORDER   = 0xFF49616B;
+    protected static final int COL_BACK_HOVER_BG = 0xFF263B43;
+    protected static final int COL_LINK_OK       = 0xFF6CEB9A;
+    protected static final int COL_LINK_MISS     = 0xFF33424A;
     protected static final int COL_RADIUS_BAR    = 0xFF0A2A0A;
     protected static final int COL_RADIUS_FILL   = 0xFF33AA33;
     protected static final int COL_GHOST_OVERLAY = 0x4433FF66;
@@ -148,11 +148,8 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
         int lx = leftPos, ty = topPos;
 
         // 1. Основной фон + внешняя граница
-        g.fill(lx, ty, lx + GUI_W, ty + guiH, COL_BG);
-        drawBorder(g, lx, ty, GUI_W, guiH, COL_BORDER);
 
         // 2. Шапка: фон
-        g.fill(lx + 1, ty + 1, lx + GUI_W - 1, ty + HEADER_H, COL_HEADER_BG);
 
         // 3. Кнопки в шапке
         drawBackButton(g, lx, ty, mx, my);
@@ -161,15 +158,12 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
         // 4. Заголовок — название текущей вкладки, центр между кнопками
         String tabTitle = getTabTitle();
         int titleX = lx + (GUI_W - font.width(tabTitle)) / 2;
-        int titleY = ty + BTN_Y + (BTN_H - font.lineHeight) / 2;
+        int titleY = ty + 4;
         g.drawString(font, tabTitle, titleX, titleY, COL_TITLE, false);
 
         // 5. Разделитель шапка / контент
-        g.fill(lx + 1, ty + HEADER_H, lx + GUI_W - 1, ty + HEADER_H + 1, COL_HEADER_SEP);
 
         // 6. Контентная область
-        int contentBottom = ty + (isInventoryHidden() ? guiH - 4 : getInvYBase() - 4);
-        g.fill(lx + 1, ty + CONTENT_TOP, lx + GUI_W - 1, contentBottom, COL_CONTENT_BG);
 
         // 7. Древний страж — общий фокус нового интерфейса
         if (showGuardian()) drawGuardian(g, lx, ty, mx, my);
@@ -201,8 +195,8 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
 
     protected void drawBackButton(GuiGraphics g, int lx, int ty, int mx, int my) {
         boolean hov = isBackHovered(mx, my);
-        int bx = lx + BACK_X;
-        int by = ty + BTN_Y;
+        int bx = lx + 24;
+        int by = ty + 122;
 
         g.fill(bx, by, bx + BACK_W, by + BTN_H,
                 hov ? COL_BACK_HOVER_BG : COL_BACK_BG);
@@ -218,15 +212,15 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     }
 
     protected boolean isBackHovered(int mx, int my) {
-        return mx >= leftPos + BACK_X && mx < leftPos + BACK_X + BACK_W
-                && my >= topPos + BTN_Y && my < topPos + BTN_Y + BTN_H;
+        return mx >= leftPos + 24 && mx < leftPos + 24 + BACK_W
+                && my >= topPos + 122 && my < topPos + 122 + BTN_H;
     }
 
     // ── Кнопка Save ──────────────────────────────────────────────────────────
 
     protected void drawSaveButton(GuiGraphics g, int lx, int ty, int mx, int my) {
-        int bx = lx + SAVE_X;
-        int by = ty + SAVE_Y_REL;
+        int bx = lx + 198;
+        int by = ty + 122;
         boolean hov = mx >= bx && mx < bx + SAVE_W && my >= by && my < by + SAVE_H;
 
         g.fill(bx, by, bx + SAVE_W, by + SAVE_H, hov ? COL_SAVE_HOVER_BG : COL_SAVE_BG);
@@ -241,8 +235,8 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     }
 
     protected boolean isSaveHovered(int mx, int my) {
-        int bx = leftPos + SAVE_X;
-        int by = topPos  + SAVE_Y_REL;
+        int bx = leftPos + 198;
+        int by = topPos + 122;
         return mx >= bx && mx < bx + SAVE_W && my >= by && my < by + SAVE_H;
     }
 
@@ -257,7 +251,7 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     protected boolean showGuardian() { return true; }
 
     protected void drawGuardian(GuiGraphics g, int lx, int ty, int mx, int my) {
-        int cx = lx + 72;
+        int cx = lx + 90;
         int cy = ty + 88;
         if (!guardianStarted) {
             guardianStarted = true;
@@ -272,7 +266,7 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
         } else {
             guardianYaw = Mth.lerp(0.10f, guardianYaw, target);
         }
-        MachineSoulGuiSupport.renderGuardian(g, MachineSoulGuiSupport.guardian(), cx, cy, 38, guardianYaw, 0f);
+        MachineSoulGuiSupport.renderGuardian(g, MachineSoulGuiSupport.guardian(), cx, cy, 24, guardianYaw);
     }
 
     // ── Утилиты ───────────────────────────────────────────────────────────────

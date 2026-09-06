@@ -73,7 +73,7 @@ public class MachineSoulTargetScreen extends BaseMachineSoulScreen<MachineSoulTa
     // нужен (см. isInventoryHidden()), поэтому высота считается только по
     // реальному контенту — хинт + переключатель + кнопка Filter — без
     // запаса под слоты инвентаря/подпись "Inventory".
-    private static final int GUI_H_TARGET = FILTER_BTN_Y + FILTER_BTN_H + 8;
+    private static final int GUI_H_TARGET = 155;
 
     // ── Цвета переключателя ───────────────────────────────────────────────────
     private static final int COL_TOGGLE_ON_BG            = 0xFF153D15;

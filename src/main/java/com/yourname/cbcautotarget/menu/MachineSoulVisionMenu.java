@@ -54,7 +54,6 @@ public class MachineSoulVisionMenu extends AbstractContainerMenu {
         this.detectionRadius   = be.getDetectionRadius();
         this.keepDistance      = be.getKeepDistance();
         this.standStillDistance = be.getStandStillDistance();
-        addPlayerInventory(inv);
     }
 
     private void addPlayerInventory(Inventory inv) {
