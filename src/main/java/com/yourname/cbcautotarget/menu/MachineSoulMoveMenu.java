@@ -36,8 +36,8 @@ public class MachineSoulMoveMenu extends AbstractContainerMenu {
     };
 
     public static final int FREQ_SLOTS  = MOVE_ROLES.length * 2; // 12
-    public static final int FREQ_X0     = 144;
-    public static final int FREQ_X1     = 164;
+    public static final int[] CELL_X = {28, 218, 12, 234, 28, 218};
+    public static final int[] CELL_Y = {30, 30, 78, 78, 126, 126};
     // Hint-строка: y=18..27 (1 строка). Строки ролей начинаются с 28.
     public static final int FIRST_ROW_Y = 28;
     public static final int ROW_H       = 18;
@@ -89,7 +89,11 @@ public class MachineSoulMoveMenu extends AbstractContainerMenu {
 
     /** Y слота для роли (относительно topPos). */
     public static int slotY(int roleIndex) {
-        return FIRST_ROW_Y + roleIndex * ROW_H + SLOT_OFFSET;
+        return CELL_Y[roleIndex];
+    }
+
+    public static int slotX(int roleIndex, int pair) {
+        return CELL_X[roleIndex] + pair * 22;
     }
 
     /** Y строки (rowY) для roleIndex. */
@@ -100,8 +104,8 @@ public class MachineSoulMoveMenu extends AbstractContainerMenu {
     private void addFreqSlots() {
         for (int i = 0; i < MOVE_ROLES.length; i++) {
             int y = slotY(i);
-            addSlot(new GhostSlot(freqContainer, i * 2,     FREQ_X0, y));
-            addSlot(new GhostSlot(freqContainer, i * 2 + 1, FREQ_X1, y));
+            addSlot(new GhostSlot(freqContainer, i * 2,     slotX(i, 0), y));
+            addSlot(new GhostSlot(freqContainer, i * 2 + 1, slotX(i, 1), y));
         }
     }
 

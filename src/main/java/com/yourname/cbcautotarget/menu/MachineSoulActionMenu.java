@@ -30,8 +30,8 @@ import net.minecraft.world.item.ItemStack;
 public class MachineSoulActionMenu extends AbstractContainerMenu {
 
     public static final int FREQ_SLOTS  = 2;
-    public static final int FREQ_X0     = 144;
-    public static final int FREQ_X1     = 164;
+    public static final int FREQ_X0     = 218;
+    public static final int FREQ_X1     = 240;
     // Hint: y=18, до 5 строк (52px) с запасом под самый длинный перевод среди
     // всех языков локализации → заканчивается на 70. FIRE строка начинается с 70.
     public static final int FIRST_ROW_Y = 70;
@@ -42,7 +42,7 @@ public class MachineSoulActionMenu extends AbstractContainerMenu {
     public static final int INV_Y_BASE  = 155;
 
     // FIRE — единственная строка на этой вкладке
-    public static final int FIRE_ROW_Y  = FIRST_ROW_Y;
+    public static final int FIRE_ROW_Y  = 78;
     public static final int FIRE_SLOT_Y = FIRE_ROW_Y + SLOT_OFFSET;
 
     public final MachineSoulBlockEntity blockEntity;

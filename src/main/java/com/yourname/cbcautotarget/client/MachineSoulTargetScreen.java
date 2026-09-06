@@ -346,7 +346,7 @@ public class MachineSoulTargetScreen extends BaseMachineSoulScreen<MachineSoulTa
     // ── Переключатель ──────────────────────────────────────────────────────────
 
     private void drawTargetToggle(GuiGraphics g, int lx, int ty, int mx, int my) {
-        int x = lx + 135, y = ty + 44, w = 78, h = 20;
+        int x = lx + 24, y = ty + 48, w = 78, h = 20;
         boolean hov = mx >= x && mx < x+w && my >= y && my < y+h;
         g.fill(x,y,x+w,y+h,targetPlayers ? COL_TOGGLE_ON_BG : COL_TOGGLE_OFF_BG);
         drawBorder(g,x,y,w,h,hov ? COL_ACCENT2 : (targetPlayers ? COL_TOGGLE_ON_BORDER : COL_TOGGLE_OFF_BORDER));
@@ -355,14 +355,14 @@ public class MachineSoulTargetScreen extends BaseMachineSoulScreen<MachineSoulTa
     }
 
     private boolean isToggleHovered(int mx, int my) {
-        int x=leftPos+135, y=topPos+44;
+        int x=leftPos+24, y=topPos+48;
         return mx>=x && mx<x+78 && my>=y && my<y+20;
     }
 
     // ── Кнопка фильтра (категории + вайтлист игроков + командеры) ───────────────
 
     private void drawFilterButton(GuiGraphics g, int lx, int ty, int mx, int my) {
-        int x=lx+165, y=ty+78, w=78, h=20; boolean hov=mx>=x&&mx<x+w&&my>=y&&my<y+h;
+        int x=lx+218, y=ty+82, w=78, h=20; boolean hov=mx>=x&&mx<x+w&&my>=y&&my<y+h;
         g.fill(x,y,x+w,y+h,hov?COL_FILTER_BG_HOV:COL_FILTER_BG);
         drawBorder(g,x,y,w,h,hov?COL_FILTER_BORDER_HOV:COL_FILTER_BORDER);
         g.drawCenteredString(font,"FILTER",x+w/2,y+6,hov?COL_FILTER_TEXT:COL_TEXT);
@@ -373,7 +373,7 @@ public class MachineSoulTargetScreen extends BaseMachineSoulScreen<MachineSoulTa
     }
 
     private boolean isFilterBtnHovered(int mx, int my) {
-        int x=leftPos+165,y=topPos+78; return mx>=x&&mx<x+78&&my>=y&&my<y+20;
+        int x=leftPos+218,y=topPos+82; return mx>=x&&mx<x+78&&my>=y&&my<y+20;
     }
 
     // ── Клики ─────────────────────────────────────────────────────────────────

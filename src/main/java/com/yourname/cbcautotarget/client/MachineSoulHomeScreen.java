@@ -19,7 +19,7 @@ public class MachineSoulHomeScreen extends AbstractContainerScreen<MachineSoulHo
     private static final int W=340, H=220, CX=170, CY=112, BUTTON_W=64, BUTTON_H=18;
     private final BlockPos blockPos;
     private boolean searchActive, subLevel;
-    private float guardianYaw;
+    private float guardianYaw,guardianPitch;
     private int introTicks;
     private record Card(Tab tab,String label,String tip) {}
     private static final Card[] CARDS={
@@ -34,8 +34,10 @@ public class MachineSoulHomeScreen extends AbstractContainerScreen<MachineSoulHo
     @Override protected void renderBg(GuiGraphics g,float pt,int mx,int my){
         int lx=leftPos,ty=topPos;
         float target=-Mth.clamp(((mx-(lx+CX))/70f)*45f,-45f,45f);
+        float targetPitch=Mth.clamp(((my-(ty+CY))/70f)*30f,-30f,30f);
         if(introTicks<12){introTicks++;guardianYaw=Mth.lerp(introTicks/12f,0f,target<0?-45f:45f);}else guardianYaw=Mth.lerp(.10f,guardianYaw,target);
-        MachineSoulGuiSupport.renderGuardian(g,MachineSoulGuiSupport.guardian(),lx+CX,ty+CY,42,guardianYaw);
+        guardianPitch=Mth.lerp(.10f,guardianPitch,targetPitch);
+        MachineSoulGuiSupport.renderGuardian(g,MachineSoulGuiSupport.guardian(),lx+CX,ty+CY,42,guardianYaw,guardianPitch);
         String title=Component.translatable("gui.cbc_autotarget.home.title").getString();g.drawCenteredString(font,title,lx+W/2,ty+6,0xFFE7F1F4);
         g.drawCenteredString(font,Component.literal("MACHINE SOUL").getString(),lx+CX,ty+24,0xFF71838A);
         drawToggle(g,lx+CX-32,ty+42,searchActive,"SEARCH",mx,my);

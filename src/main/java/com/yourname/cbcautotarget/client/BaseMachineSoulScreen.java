@@ -96,6 +96,7 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
     protected final BlockPos blockPos;
     protected final int guiH;
     private float guardianYaw = 0f;
+    private float guardianPitch = 0f;
     private float guardianStartYaw = 0f;
     private int guardianStartTicks = 0;
     private boolean guardianStarted = false;
@@ -259,6 +260,7 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
             guardianStartTicks = 0;
         }
         float target = -Mth.clamp(((mx - cx) / 70f) * 45f, -45f, 45f);
+        float targetPitch = Mth.clamp(((my - cy) / 70f) * 30f, -30f, 30f);
         if (guardianStartTicks < 12) {
             guardianStartTicks++;
             float direction = target < 0 ? -1f : 1f;
@@ -266,7 +268,8 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
         } else {
             guardianYaw = Mth.lerp(0.10f, guardianYaw, target);
         }
-        MachineSoulGuiSupport.renderGuardian(g, MachineSoulGuiSupport.guardian(), cx, cy, 42, guardianYaw);
+        guardianPitch = Mth.lerp(0.10f, guardianPitch, targetPitch);
+        MachineSoulGuiSupport.renderGuardian(g, MachineSoulGuiSupport.guardian(), cx, cy, 42, guardianYaw, guardianPitch);
     }
 
     // ── Утилиты ───────────────────────────────────────────────────────────────
