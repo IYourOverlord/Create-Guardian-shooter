@@ -1,5 +1,6 @@
 package com.yourname.cbcautotarget.client;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.yourname.cbcautotarget.blockentity.MachineSoulBlockEntity.CommandRole;
 import com.yourname.cbcautotarget.blockentity.MachineSoulBlockEntity.Tab;
 import com.yourname.cbcautotarget.menu.MachineSoulMoveMenu;
@@ -30,6 +31,54 @@ public class MachineSoulMoveScreen extends BaseMachineSoulScreen<MachineSoulMove
             if(mx>=x&&mx<x+38&&my>=y&&my<y+18)g.renderTooltip(font,Component.literal(LABELS[r]+" Redstone Link frequencies"),mx,my);
         }
         // Navigation is drawn by BaseMachineSoulScreen at header level.
+        renderGhostItems(g, lx, ty, mx, my);
     }
-    @Override protected boolean onSaveClicked(){Map<CommandRole,ItemStack[]> map=new LinkedHashMap<>();for(int r=0;r<6;r++)map.put(MachineSoulMoveMenu.MOVE_ROLES[r],new ItemStack[]{menu.slots.get(r*2).getItem().copy(),menu.slots.get(r*2+1).getItem().copy()});PacketDistributor.sendToServer(new SaveMachineSoulMovePacket(blockPos,map));onClose();return true;}
+
+    private void renderGhostItems(GuiGraphics g,int lx,int ty,int mx,int my){
+        for (int i = 0; i < MachineSoulMoveMenu.FREQ_SLOTS; i++) {
+            Slot slot = menu.slots.get(i);
+            ItemStack stack = slot.getItem();
+            if (stack.isEmpty()) continue;
+
+            int role = i / 2, pair = i % 2;
+            int x = lx + MachineSoulMoveMenu.slotX(role, pair);
+            int y = ty + MachineSoulMoveMenu.slotY(role);
+
+            boolean hov = mx >= x && mx < x + 16 && my >= y && my < y + 16;
+            if (hov) g.fill(x, y, x + 16, y + 16, COL_GHOST_HOVER);
+
+            RenderSystem.enableBlend();
+            RenderSystem.setShaderColor(1f, 1f, 1f, 0.5f);
+            g.renderItem(stack, x, y);
+            RenderSystem.setShaderColor(1f, 1f, 1f, 1f);
+            RenderSystem.disableBlend();
+            g.fill(x, y, x + 16, y + 16, COL_GHOST_OVERLAY);
+        }
+    }
+
+    @Override
+    public boolean mouseClicked(double mx, double my, int button) {
+        for (int i = 0; i < MachineSoulMoveMenu.FREQ_SLOTS; i++) {
+            int role = i / 2, pair = i % 2;
+            int x = leftPos + MachineSoulMoveMenu.slotX(role, pair);
+            int y = topPos  + MachineSoulMoveMenu.slotY(role);
+            if (mx >= x && mx < x + 16 && my >= y && my < y + 16) {
+                ItemStack carried = menu.getCarried();
+                menu.setFreqItem(i, (button == 1 || carried.isEmpty()) ? ItemStack.EMPTY : carried);
+                return true;
+            }
+        }
+        return super.mouseClicked(mx, my, button);
+    }
+
+    @Override protected boolean onSaveClicked(){
+        Map<CommandRole,ItemStack[]> map=new LinkedHashMap<>();
+        for(int r=0;r<6;r++)
+            map.put(MachineSoulMoveMenu.MOVE_ROLES[r],new ItemStack[]{
+                    menu.getFreqItem(r*2).copy(),
+                    menu.getFreqItem(r*2+1).copy()});
+        PacketDistributor.sendToServer(new SaveMachineSoulMovePacket(blockPos,map));
+        onClose();
+        return true;
+    }
 }
