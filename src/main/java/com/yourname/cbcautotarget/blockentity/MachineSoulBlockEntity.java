@@ -287,6 +287,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         slot.freq1 = freq1.copy();
         deactivateSignal(role);
         setChanged();
+        persistentSlotBackup = null; // явное пользовательское изменение — обновим при следующем save
         LOGGER.info("[MachineSoul] assignSlot pos={} role={} freq0={} freq1={} | levelClass={}",
                 worldPosition, role,
                 freq0.isEmpty() ? "EMPTY" : freq0.getItem().toString(),
@@ -314,6 +315,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         slot.freq1 = ItemStack.EMPTY;
         deactivateSignal(role);
         setChanged();
+        persistentSlotBackup = null; // явное пользовательское изменение — обновим при следующем save
         LOGGER.info("[MachineSoul] clearSlot pos={} role={}", worldPosition, role);
         if (level != null && !level.isClientSide) {
             level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
@@ -1111,6 +1113,64 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     @Nullable private CompoundTag schematicBackup = null;
     private HolderLookup.Provider schematicBackupRegistries = null;
 
+    // ── Постоянный анти-потерянный backup слотов ────────────────────────────
+    //
+    // ПРИЧИНА: подтверждено логами, что BE может получить пустой CommandSlots
+    // тег в loadAdditional/handleUpdateTag ПОСЛЕ того, как этот же BE (та же
+    // позиция, тот же тик работы сервера) уже нёс реальные, ненулевые частоты
+    // (см. saveAdditional в 18:37:17.728 с частотами vs getUpdateTag в
+    // 18:37:19.702 — уже пусто, БЕЗ единого промежуточного вызова
+    // assignSlot/clearSlot). Судя по debug.log, это происходит на sub-level
+    // измерении Sable ("aeroworld:aeroworld") в момент, когда Sable лениво
+    // инициализирует свои mixin-хендлеры (elevator_controls/frogports) —
+    // похоже на пересоздание/повторную установку BE при реструктуризации
+    // физической конструкции, при котором Sable создаёт новый BE в обход
+    // штатного BlockEntity.loadWithComponents (единственного пути, где
+    // сейчас логируется восстановление из schematicBackup).
+    //
+    // schematicBackup НЕ подходит для защиты от этого случая: он специально
+    // предназначен только для узкого окна деплоя Create-схематики и
+    // безусловно обнуляется в writeSafeNbt() после — то есть в любой другой
+    // момент жизни блока (обычная игра, перемещение на корабле и т.п.) он
+    // равен null и не может ничего восстановить.
+    //
+    // persistentSlotBackup работает независимо и живёт всё время существования
+    // блока: обновляется при каждом loadAdditional/handleUpdateTag/
+    // saveAdditional/getUpdateTag, где реально присутствуют непустые слоты,
+    // и сбрасывается на null только при явном пользовательском действии
+    // (assignSlot/clearSlot через GUI) — чтобы не переписывать намеренную
+    // очистку слота сохранённым старым значением.
+    @Nullable private CompoundTag persistentSlotBackup = null;
+    private HolderLookup.Provider persistentSlotBackupRegistries = null;
+
+    private boolean hasAnyAssignedSlot() {
+        for (CommandSlot slot : slots.values()) if (slot.isAssigned()) return true;
+        return false;
+    }
+
+    /**
+     * Вызывается из каждой точки чтения/записи NBT слотов. Если текущие
+     * слоты в памяти непусты — обновляет резерв. Если слоты в памяти ПУСТЫ,
+     * но резерв есть — это подозрительная потеря данных без явного
+     * пользовательского clearSlot/assignSlot; восстанавливаем из резерва.
+     * Возвращает true, если было выполнено восстановление (для логирования).
+     */
+    private boolean guardAgainstSlotLoss(String site, HolderLookup.Provider registries) {
+        if (hasAnyAssignedSlot()) {
+            persistentSlotBackup = new CompoundTag();
+            saveSlotsToTag(persistentSlotBackup, registries);
+            persistentSlotBackupRegistries = registries;
+            return false;
+        }
+        if (persistentSlotBackup != null) {
+            LOGGER.warn("[MachineSoul] {} pos={} — slots unexpectedly empty but persistentSlotBackup present, RESTORING: [{}]",
+                    site, worldPosition, describeSlotsFromTag(persistentSlotBackup, persistentSlotBackupRegistries));
+            loadSlotsFromTag(persistentSlotBackup, persistentSlotBackupRegistries);
+            return true;
+        }
+        return false;
+    }
+
     /** Вызывается из SafeNbtWriter (CBCAutoTarget.commonSetup) — направление BE→tag. */
     public void writeSafeNbt(CompoundTag tag, HolderLookup.Provider registries) {
         LOGGER.info("[MachineSoul] writeSafeNbt CALLED pos={} | slotsBefore={} backupHeld={}",
@@ -1176,6 +1236,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     @Override
     protected void saveAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.saveAdditional(tag, registries);
+        guardAgainstSlotLoss("saveAdditional", registries);
         saveSlotsToTag(tag, registries);
         tag.putInt("DetectionRadius", detectionRadius);
         tag.putInt("KeepDistance", keepDistance);
@@ -1233,6 +1294,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             }
             schematicBackup = tag.copy();
             schematicBackupRegistries = registries;
+            guardAgainstSlotLoss("loadAdditional[REAL DATA]", registries);
             LOGGER.info("[MachineSoul] loadAdditional → REAL DATA path pos={} slots=[{}] radius={} searchActive={} targetPlayers={} filterMask={} hadPlayerFilterTag={}",
                     worldPosition, describeSlots(), detectionRadius, targetSearchActive, targetPlayers,
                     playerFilterData.getMask(), tag.contains("PlayerFilter", Tag.TAG_COMPOUND));
@@ -1264,12 +1326,17 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             if (schematicBackup.contains("CommanderFilter", Tag.TAG_COMPOUND)) {
                 commanderFilterData.loadFromNBT(schematicBackup.getCompound("CommanderFilter"));
             }
+            guardAgainstSlotLoss("loadAdditional[BACKUP RESTORE]", registries);
             LOGGER.info("[MachineSoul] loadAdditional → BACKUP RESTORE done pos={} slots=[{}] searchActive={} targetPlayers={} filterMask={}",
                     worldPosition, describeSlots(), targetSearchActive, targetPlayers, playerFilterData.getMask());
         } else {
-            // Ни данных, ни резерва — новый пустой блок или проблема.
-            LOGGER.warn("[MachineSoul] loadAdditional → NO DATA, NO BACKUP pos={} — slots remain as-is: [{}]",
-                    worldPosition, describeSlots());
+            // Ни данных из тега, ни резерва схематики — последний шанс восстановить
+            // реальные частоты из persistentSlotBackup (см. объявление поля выше).
+            boolean restored = guardAgainstSlotLoss("loadAdditional[NO DATA, NO SCHEMATIC BACKUP]", registries);
+            if (!restored) {
+                LOGGER.warn("[MachineSoul] loadAdditional → NO DATA, NO BACKUP pos={} — slots remain as-is: [{}]",
+                        worldPosition, describeSlots());
+            }
         }
     }
 
@@ -1284,6 +1351,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     @Override
     public CompoundTag getUpdateTag(HolderLookup.Provider registries) {
         CompoundTag tag = super.getUpdateTag(registries);
+        guardAgainstSlotLoss("getUpdateTag", registries);
         saveSlotsToTag(tag, registries);
         tag.putInt("DetectionRadius", detectionRadius);
         tag.putInt("KeepDistance", keepDistance);
@@ -1373,6 +1441,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             // состояние с реальными данными.
             schematicBackup = tag.copy();
             schematicBackupRegistries = registries;
+            guardAgainstSlotLoss("handleUpdateTag[SLOTS LOADED]", registries);
             LOGGER.info("[MachineSoul] handleUpdateTag → SLOTS LOADED pos={} slots=[{}] searchActive={} targetPlayers={} filterMask={} hadPlayerFilterTag={}",
                     worldPosition, describeSlots(), targetSearchActive, targetPlayers,
                     playerFilterData.getMask(), tag.contains("PlayerFilter", Tag.TAG_COMPOUND));
@@ -1386,6 +1455,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                             + "tagHadPlayerFilter={} (IGNORED because CommandSlots missing) currentFilterMask={}",
                     worldPosition, describeSlots(),
                     tag.contains("PlayerFilter", Tag.TAG_COMPOUND), playerFilterData.getMask());
+            guardAgainstSlotLoss("handleUpdateTag[SKIPPED]", registries);
         }
         // schematicBackup намеренно НЕ обнуляется.
         // Только writeSafeNbt() очищает его по завершении деплоя.
