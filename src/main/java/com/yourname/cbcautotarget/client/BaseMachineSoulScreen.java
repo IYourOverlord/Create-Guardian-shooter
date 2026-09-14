@@ -139,6 +139,7 @@ public abstract class BaseMachineSoulScreen<M extends AbstractContainerMenu>
             case MOVEMENT -> "⬡  Move";
             case ACTION   -> "⚔  Action";
             case TARGET   -> "🎯  Target";
+            case NPC      -> "🧍  NPC";
         };
     }
 

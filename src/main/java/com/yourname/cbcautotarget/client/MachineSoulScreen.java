@@ -231,6 +231,7 @@ public class MachineSoulScreen extends AbstractContainerScreen<MachineSoulMenu> 
             case MOVEMENT -> renderMovementContent(g, lx, ty, mouseX, mouseY);
             case ACTION   -> renderActionContent(g, lx, ty, mouseX, mouseY);
             case TARGET   -> renderTargetContent(g, lx, ty, mouseX, mouseY);
+            case NPC      -> { }
         }
 
         // ── Инвентарь игрока ──────────────────────────────────────────────────
@@ -648,6 +649,8 @@ public class MachineSoulScreen extends AbstractContainerScreen<MachineSoulMenu> 
                     Component.translatable("gui.cbc_autotarget.soul.tab.action").getString(),   34);
             case TARGET   -> "🎯 " + mc.font.plainSubstrByWidth(
                     Component.translatable("gui.cbc_autotarget.soul.tab.target").getString(),   34);
+            case NPC      -> "🧍 " + mc.font.plainSubstrByWidth(
+                    Component.translatable("gui.cbc_autotarget.soul.tab.npc").getString(),      34);
         };
     }
 

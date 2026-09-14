@@ -66,6 +66,7 @@
   "gui.cbc_autotarget.soul.tab.movement": "Movement",
   "gui.cbc_autotarget.soul.tab.action": "Action",
   "gui.cbc_autotarget.soul.tab.target": "Target",
+  "gui.cbc_autotarget.soul.tab.npc": "NPC",
   "gui.cbc_autotarget.soul.tab.label.vision": "Vision",
   "gui.cbc_autotarget.soul.tab.label.movement": "Movement",
   "gui.cbc_autotarget.soul.tab.label.action": "Action",

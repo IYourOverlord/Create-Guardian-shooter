@@ -67,6 +67,7 @@ public class MachineSoulMenu extends AbstractContainerMenu {
             case ACTION   -> FIRST_ROW_Y;
             case VISION   -> 0; // нет слотов
             case TARGET   -> 0; // нет слотов (Target — только переключатель)
+            case NPC      -> 0; // нет слотов
         };
     }
 

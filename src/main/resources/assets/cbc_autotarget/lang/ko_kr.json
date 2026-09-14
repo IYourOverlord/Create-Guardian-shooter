@@ -66,6 +66,7 @@
   "gui.cbc_autotarget.soul.tab.movement": "이동",
   "gui.cbc_autotarget.soul.tab.action": "액션",
   "gui.cbc_autotarget.soul.tab.target": "대상",
+  "gui.cbc_autotarget.soul.tab.npc": "NPC [needs translation]",
   "gui.cbc_autotarget.soul.tab.label.vision": "비전",
   "gui.cbc_autotarget.soul.tab.label.movement": "이동",
   "gui.cbc_autotarget.soul.tab.label.action": "액션",

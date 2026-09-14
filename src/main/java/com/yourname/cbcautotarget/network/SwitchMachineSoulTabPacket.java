@@ -58,6 +58,7 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
                 case MOVEMENT -> openMove(sp, soul);
                 case ACTION   -> openAction(sp, soul);
                 case TARGET   -> openTarget(sp, soul);
+                case NPC      -> openNpc(sp, soul);
             }
         });
     }
@@ -123,6 +124,10 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
         });
     }
 
+    public static void openNpc(ServerPlayer sp, MachineSoulBlockEntity soul) {
+        sp.openMenu(simpleProvider(soul, Tab.NPC), buf -> buf.writeBlockPos(soul.getBlockPos()));
+    }
+
     /** Создаёт анонимный MenuProvider для openMenu, делегируя createMenu в BE. */
     private static MenuProvider simpleProvider(MachineSoulBlockEntity soul, Tab tab) {
         return new MenuProvider() {
@@ -133,6 +138,7 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
                     case MOVEMENT -> new MachineSoulMoveMenu(id, inv, soul);
                     case ACTION   -> new com.yourname.cbcautotarget.menu.MachineSoulActionMenu(id, inv, soul);
                     case TARGET   -> new com.yourname.cbcautotarget.menu.MachineSoulTargetMenu(id, inv, soul);
+                    case NPC      -> new com.yourname.cbcautotarget.menu.MachineSoulNpcMenu(id, inv, soul);
                 };
             }
         };

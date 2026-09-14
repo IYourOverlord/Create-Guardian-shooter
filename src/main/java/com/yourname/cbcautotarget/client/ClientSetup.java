@@ -29,6 +29,7 @@ public class ClientSetup {
         event.register(ModMenus.MACHINE_SOUL_MOVE.get(),    MachineSoulMoveScreen::new);
         event.register(ModMenus.MACHINE_SOUL_ACTION.get(),  MachineSoulActionScreen::new);
         event.register(ModMenus.MACHINE_SOUL_TARGET.get(),  MachineSoulTargetScreen::new);
+        event.register(ModMenus.MACHINE_SOUL_NPC.get(),     MachineSoulNpcScreen::new);
         // Старый экран — для обратной совместимости
         event.register(ModMenus.MACHINE_SOUL_MENU.get(),    MachineSoulScreen::new);
     }

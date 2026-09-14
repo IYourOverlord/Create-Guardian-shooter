@@ -87,7 +87,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     }
 
     /** Вкладки GUI Machine Soul. */
-    public enum Tab { VISION, MOVEMENT, ACTION, TARGET }
+    public enum Tab { VISION, MOVEMENT, ACTION, TARGET, NPC }
 
     // ── CommandSlot ───────────────────────────────────────────────────────────
 

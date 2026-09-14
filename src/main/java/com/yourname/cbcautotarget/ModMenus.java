@@ -45,4 +45,8 @@ public class ModMenus {
     public static final DeferredHolder<MenuType<?>, MenuType<MachineSoulTargetMenu>> MACHINE_SOUL_TARGET =
             MENU_TYPES.register("machine_soul_target",
                     () -> IMenuTypeExtension.create(MachineSoulTargetMenu::new));
+
+    public static final DeferredHolder<MenuType<?>, MenuType<MachineSoulNpcMenu>> MACHINE_SOUL_NPC =
+            MENU_TYPES.register("machine_soul_npc",
+                    () -> IMenuTypeExtension.create(MachineSoulNpcMenu::new));
 }

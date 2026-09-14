@@ -66,6 +66,7 @@
   "gui.cbc_autotarget.soul.tab.movement": "Hareket",
   "gui.cbc_autotarget.soul.tab.action": "Eylem",
   "gui.cbc_autotarget.soul.tab.target": "Hedef",
+  "gui.cbc_autotarget.soul.tab.npc": "NPC [needs translation]",
   "gui.cbc_autotarget.soul.tab.label.vision": "Vizyon",
   "gui.cbc_autotarget.soul.tab.label.movement": "Hareket",
   "gui.cbc_autotarget.soul.tab.label.action": "Eylem",
