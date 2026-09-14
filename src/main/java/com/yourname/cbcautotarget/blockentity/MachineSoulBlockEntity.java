@@ -211,6 +211,8 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     private double gyroIntegralRoll = 0.0;
     @Nullable
     private Vector3d gyroLastValidWorldRight = null;
+    // Троттлинг диагностического лога — не спамит на каждый физ-субтик.
+    private long gyroLastLogMs = 0L;
 
     /**
      * Разрешён ли поиск/таргетинг игроков. Если выключено — doScan()
@@ -557,51 +559,44 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         Vector3d worldForward = orientation.transform(new Vector3d(localForward));
         Vector3d worldUp = new Vector3d(0.0, 1.0, 0.0);
 
-        // ── Текущий и желаемый «правый борт» ────────────────────────────────
-        Vector3d currentRight = new Vector3d(worldForward).cross(worldUp);
-        Vector3d desiredRight;
-        boolean nearVertical = currentRight.lengthSquared() < GYRO_EPS;
-        Vector3d fwdHoriz = null;
-        if (!nearVertical) {
-            fwdHoriz = new Vector3d(worldForward.x, 0.0, worldForward.z);
-            nearVertical = fwdHoriz.lengthSquared() < GYRO_EPS;
-        }
+        // ── Текущий правый борт корабля ──────────────────────────────────────
+        // ВАЖНО: worldForward НЕ меняется при чистом вращении вокруг самой
+        // оси forward (roll) — поэтому cross(worldForward, worldUp) в принципе
+        // не может нести информацию о крене (был баг исходной реализации,
+        // из-за которого П-составляющая всегда давала rollError≈0).
+        // Правильный «текущий правый борт» — фиксированный в теле корабля
+        // вектор (перпендикулярный facing), провёрнутый ПОЛНОЙ ориентацией
+        // sublevel'а — он корректно отслеживает крен, т.к. учитывает все 3 оси.
+        Direction rightLocalDir = facing.getClockWise();
+        Vector3d localRight = new Vector3d(rightLocalDir.getStepX(), rightLocalDir.getStepY(), rightLocalDir.getStepZ());
+        Vector3d shipRight = orientation.transform(new Vector3d(localRight)); // всегда ⟂ worldForward по построению
 
+        // ── Желаемый (горизонтальный) правый борт ────────────────────────────
+        Vector3d fwdHoriz = new Vector3d(worldForward.x, 0.0, worldForward.z);
+        boolean nearVertical = fwdHoriz.lengthSquared() < GYRO_EPS;
+        Vector3d desiredRight;
         if (!nearVertical) {
-            currentRight.normalize();
             fwdHoriz.normalize();
             desiredRight = new Vector3d(fwdHoriz).cross(worldUp).normalize();
             // Кэшируем последний валидный «горизонтальный» правый борт — он
             // послужит резервной осью, если корабль уйдёт в вертикальный facing.
             gyroLastValidWorldRight = new Vector3d(desiredRight);
         } else {
-            // Facing почти вертикален: forward×up вырождается, roll относительно
-            // горизонта не определён. Вместо полного отключения стабилизации
-            // берём фиксированную ось корабля (правый борт блока в мировых
-            // координатах) как «текущий правый борт» — она всегда корректна,
-            // так как получена простым поворотом локального вектора.
-            Direction rightLocalDir = facing.getClockWise();
-            Vector3d worldRightFixed = orientation.transform(new Vector3d(
-                    rightLocalDir.getStepX(), rightLocalDir.getStepY(), rightLocalDir.getStepZ()));
-
-            currentRight = new Vector3d(worldRightFixed)
-                    .sub(new Vector3d(worldForward).mul(worldRightFixed.dot(worldForward)));
-            if (currentRight.lengthSquared() < 1e-9) return; // крайне вырожденный случай — пропускаем тик
-            currentRight.normalize();
-
-            // Резерв: последний валидный горизонтальный правый борт, спроецированный
-            // на плоскость, перпендикулярную текущему forward; если ещё не кэширован —
-            // используем сам worldRightFixed (стабилизация становится "держать текущий крен").
+            // Facing почти вертикален: горизонт относительно forward не
+            // определён (гимбал-лок). Вместо полного отключения стабилизации
+            // берём последний валидный горизонтальный ориентир (или, если его
+            // ещё не было, текущий борт — тогда стабилизация держит текущий
+            // крен), спроецированный на плоскость, перпендикулярную forward.
             Vector3d reference = gyroLastValidWorldRight != null
                     ? new Vector3d(gyroLastValidWorldRight)
-                    : new Vector3d(worldRightFixed);
+                    : new Vector3d(shipRight);
             Vector3d projected = new Vector3d(reference)
                     .sub(new Vector3d(worldForward).mul(reference.dot(worldForward)));
-            desiredRight = projected.lengthSquared() < 1e-9 ? new Vector3d(currentRight) : projected.normalize();
+            desiredRight = projected.lengthSquared() < 1e-9 ? new Vector3d(shipRight) : projected.normalize();
         }
 
-        // Ось коррекции = cross(currentRight, desiredRight); величина ~ sin(угол крена)
-        Vector3d correctionAxis = new Vector3d(currentRight).cross(desiredRight);
+        // Ось коррекции = cross(shipRight, desiredRight); величина ~ sin(угол крена)
+        Vector3d correctionAxis = new Vector3d(shipRight).cross(desiredRight);
         double rollError = correctionAxis.dot(worldForward); // чистый roll, без yaw/pitch
 
         Vector3d angVel = handle.getAngularVelocity(new Vector3d());
@@ -627,18 +622,46 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
         // ── Перевод целевого dOmega в импульс через реальный тензор инерции ─
         MassData massData = subLevel.getMassTracker();
-        if (massData == null || massData.isInvalid()) return;
+        if (massData == null || massData.isInvalid()) {
+            gyroDebugLog(() -> "massData недоступен (null=" + (massData == null) + ")");
+            return;
+        }
 
         Vector3d nLocal = orientation.transformInverse(new Vector3d(worldForward));
         Vector3d invIn = new Vector3d();
         massData.getInverseInertiaTensor().transform(nLocal, invIn);
         double s = nLocal.dot(invIn); // = worldForward · (invInertiaTensor_world · worldForward)
-        if (!Double.isFinite(s) || s <= 1e-12) return;
+        if (!Double.isFinite(s) || s <= 1e-12) {
+            gyroDebugLog(() -> "s недействителен: s=" + s);
+            return;
+        }
 
         double impulseScalar = dOmega / s;
-        if (!Double.isFinite(impulseScalar)) return;
+        final double dOmegaLog = dOmega, sLog = s;
+        if (!Double.isFinite(impulseScalar)) {
+            gyroDebugLog(() -> "impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
+            return;
+        }
+
+        final double impulseLog = impulseScalar,
+                rollErrorLog = rollError, angVelRollLog = angVelRoll;
+        final boolean nearVerticalLog = nearVertical;
+        gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
+                "roll=%.4f angVelRoll=%.4f dOmega=%.5f s=%.6f impulse=%.5f mass=%.2f nearVertical=%b",
+                rollErrorLog, angVelRollLog, dOmegaLog, sLog, impulseLog, massData.getMass(), nearVerticalLog));
 
         handle.applyAngularImpulse(new Vector3d(worldForward).mul(impulseScalar));
+    }
+
+    /**
+     * Троттлированный (раз в ~1с) диагностический лог стабилизатора —
+     * временный инструмент для отладки эффекта коррекции по факту в игре.
+     */
+    private void gyroDebugLog(java.util.function.Supplier<String> message) {
+        long now = System.currentTimeMillis();
+        if (now - gyroLastLogMs < 1000L) return;
+        gyroLastLogMs = now;
+        LOGGER.info("[MachineSoul][gyro] pos={} {}", worldPosition, message.get());
     }
     // ── end gyroscope ─────────────────────────────────────────────────────────
 
