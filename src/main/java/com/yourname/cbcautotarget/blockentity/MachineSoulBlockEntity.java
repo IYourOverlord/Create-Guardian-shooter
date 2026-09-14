@@ -13,6 +13,7 @@ import com.yourname.cbcautotarget.menu.MachineSoulMenu;
 import com.yourname.cbcautotarget.network.SyncMachineSoulStatusPacket;
 import dev.ryanhcode.sable.api.block.BlockEntitySubLevelActor;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
+import dev.ryanhcode.sable.api.physics.mass.MassData;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import net.createmod.catnip.data.Couple;
@@ -204,6 +205,12 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      * кнопкой на вкладке NPC.
      */
     private boolean gyroStabilizationActive = true;
+
+    // Рантайм-состояние PID стабилизатора (не сохраняется в NBT — накопитель
+    // и резервная ось безопасно сбрасываются при перезагрузке чанка/сервера).
+    private double gyroIntegralRoll = 0.0;
+    @Nullable
+    private Vector3d gyroLastValidWorldRight = null;
 
     /**
      * Разрешён ли поиск/таргетинг игроков. Если выключено — doScan()
@@ -510,25 +517,28 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     }
 
     // ── Gyroscope (roll stabiliser) ───────────────────────────────────────────
-    // Сила выравнивающего момента (Н·м·с за физ-тик).
-    // Подобрана так чтобы средний корабль выравнивался за ~0.5–1 с.
-    private static final double GYRO_TORQUE_STRENGTH  = 8.0;
-    // Коэффициент демпфирования угловой скорости вокруг оси forward.
-    // Гасит раскачку. 0 = нет демпфера, 1 = полное гашение за 1 тик.
-    private static final double GYRO_DAMPING_FACTOR    = 0.6;
+    // Жёстко зашитые коэффициенты критического демпфирования по оси roll.
+    // Никакого конфига/слайдера — стабилизатор всегда работает на пределе,
+    // масштабируясь под реальную инерцию конкретного корабля (см. ниже).
+    private static final double GYRO_KP = 6.0;   // П-composante (по углу ошибки, ~sin(крен))
+    private static final double GYRO_KI = 0.8;   // И-составляющая (компенсация постоянного возмущающего момента)
+    private static final double GYRO_KD = 3.5;   // Д-составляющая (гашение угловой скорости по оси forward)
+    // Anti-windup: жёсткий потолок накопителя интеграла.
+    private static final double GYRO_MAX_INTEGRAL = 0.5;
+    // Физический предохранитель: максимальное изменение угловой скорости
+    // вдоль оси forward за один физ-тик, независимо от того, что насчитал PID.
+    private static final double GYRO_MAX_RESTORING_DELTA_OMEGA = 0.5;
+    private static final double GYRO_EPS = 1e-6;
 
     /**
      * Вызывается Sable каждый физический тик пока блок находится на sublevel.
-     * Реализует гироскоп: выравнивает крен (roll) корабля к горизонту
-     * относительно оси facing блока, не трогая yaw и pitch.
-     *
-     * Принцип:
-     *   1. Вычисляем мировой вектор «вправо» от текущей ориентации корабля
-     *      (локальная ось, перпендикулярная facing и мировому up).
-     *   2. Желаемый «вправо» = facing × worldUp (горизонталь, перп. носу).
-     *   3. Ось и величина коррекционного момента = cross(currentRight, desiredRight)
-     *      ограничен вдоль оси forward (только roll, не pitch/yaw).
-     *   4. Демпфер гасит угловую скорость по оси forward.
+     * Реализует стабилизатор крена (roll) с учётом реального тензора инерции
+     * корабля — PID выдаёт целевое изменение угловой скорости (dOmega), а
+     * фактический импульс получается делением dOmega на эффективную обратную
+     * инерцию корабля вдоль оси forward (n·invI·n), посчитанную в локальных
+     * координатах sublevel'а через MassData.getInverseInertiaTensor().
+     * Это даёт одинаковое время сходимости для любого корабля без единого
+     * настраиваемого параметра.
      */
     @Override
     public void sable$physicsTick(ServerSubLevel subLevel, RigidBodyHandle handle, double timeStep) {
@@ -540,45 +550,95 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                 ? state.getValue(MachineSoulBlock.FACING)
                 : Direction.SOUTH;
 
-        // Локальный вектор «вперёд» блока в мировых координатах
         Quaterniond orientation = new Quaterniond(subLevel.logicalPose().orientation());
 
         // facing.getStepX/Y/Z — компоненты направления без зависимости от Vec3i/Vector3i
         Vector3d localForward = new Vector3d(facing.getStepX(), facing.getStepY(), facing.getStepZ()).normalize();
-        // Переводим в мировые координаты через кватернион ориентации sublevel
         Vector3d worldForward = orientation.transform(new Vector3d(localForward));
-
-        // Мировой up
         Vector3d worldUp = new Vector3d(0.0, 1.0, 0.0);
 
-        // Текущий «вправо» корабля: forward × up (нормированный)
-        Vector3d currentRight = new Vector3d(worldForward).cross(worldUp).normalize();
-        if (currentRight.lengthSquared() < 1e-6) return; // forward почти вертикален — пропускаем
+        // ── Текущий и желаемый «правый борт» ────────────────────────────────
+        Vector3d currentRight = new Vector3d(worldForward).cross(worldUp);
+        Vector3d desiredRight;
+        boolean nearVertical = currentRight.lengthSquared() < GYRO_EPS;
+        Vector3d fwdHoriz = null;
+        if (!nearVertical) {
+            fwdHoriz = new Vector3d(worldForward.x, 0.0, worldForward.z);
+            nearVertical = fwdHoriz.lengthSquared() < GYRO_EPS;
+        }
 
-        // Желаемый «вправо»: перпендикуляр к forward в горизонтальной плоскости
-        // = normalize(forward_horizontal × worldUp), где forward_horizontal — проекция на xz
-        Vector3d fwdHoriz = new Vector3d(worldForward.x, 0.0, worldForward.z);
-        if (fwdHoriz.lengthSquared() < 1e-6) return; // корабль смотрит строго вертикально
-        fwdHoriz.normalize();
-        Vector3d desiredRight = new Vector3d(fwdHoriz).cross(worldUp).normalize();
+        if (!nearVertical) {
+            currentRight.normalize();
+            fwdHoriz.normalize();
+            desiredRight = new Vector3d(fwdHoriz).cross(worldUp).normalize();
+            // Кэшируем последний валидный «горизонтальный» правый борт — он
+            // послужит резервной осью, если корабль уйдёт в вертикальный facing.
+            gyroLastValidWorldRight = new Vector3d(desiredRight);
+        } else {
+            // Facing почти вертикален: forward×up вырождается, roll относительно
+            // горизонта не определён. Вместо полного отключения стабилизации
+            // берём фиксированную ось корабля (правый борт блока в мировых
+            // координатах) как «текущий правый борт» — она всегда корректна,
+            // так как получена простым поворотом локального вектора.
+            Direction rightLocalDir = facing.getClockWise();
+            Vector3d worldRightFixed = orientation.transform(new Vector3d(
+                    rightLocalDir.getStepX(), rightLocalDir.getStepY(), rightLocalDir.getStepZ()));
 
-        // Ось коррекции = cross(currentRight, desiredRight).
-        // Направлена вдоль worldForward если есть крен. Величина = sin(угол крена).
+            currentRight = new Vector3d(worldRightFixed)
+                    .sub(new Vector3d(worldForward).mul(worldRightFixed.dot(worldForward)));
+            if (currentRight.lengthSquared() < 1e-9) return; // крайне вырожденный случай — пропускаем тик
+            currentRight.normalize();
+
+            // Резерв: последний валидный горизонтальный правый борт, спроецированный
+            // на плоскость, перпендикулярную текущему forward; если ещё не кэширован —
+            // используем сам worldRightFixed (стабилизация становится "держать текущий крен").
+            Vector3d reference = gyroLastValidWorldRight != null
+                    ? new Vector3d(gyroLastValidWorldRight)
+                    : new Vector3d(worldRightFixed);
+            Vector3d projected = new Vector3d(reference)
+                    .sub(new Vector3d(worldForward).mul(reference.dot(worldForward)));
+            desiredRight = projected.lengthSquared() < 1e-9 ? new Vector3d(currentRight) : projected.normalize();
+        }
+
+        // Ось коррекции = cross(currentRight, desiredRight); величина ~ sin(угол крена)
         Vector3d correctionAxis = new Vector3d(currentRight).cross(desiredRight);
+        double rollError = correctionAxis.dot(worldForward); // чистый roll, без yaw/pitch
 
-        // Оставляем только компоненту вдоль worldForward (чистый roll, без yaw/pitch)
-        double rollComponent = correctionAxis.dot(worldForward);
-        Vector3d rollTorque = new Vector3d(worldForward).mul(rollComponent * GYRO_TORQUE_STRENGTH * timeStep);
-
-        // Демпфирование: гасим угловую скорость по оси worldForward
         Vector3d angVel = handle.getAngularVelocity(new Vector3d());
         double angVelRoll = angVel.dot(worldForward);
-        Vector3d dampingTorque = new Vector3d(worldForward).mul(-angVelRoll * GYRO_DAMPING_FACTOR);
 
-        Vector3d totalTorque = rollTorque.add(dampingTorque);
-        if (totalTorque.lengthSquared() < 1e-12) return;
+        // ── PID по крену (П + И с anti-windup + Д) ──────────────────────────
+        gyroIntegralRoll += rollError * timeStep;
+        gyroIntegralRoll = Math.max(-GYRO_MAX_INTEGRAL, Math.min(GYRO_MAX_INTEGRAL, gyroIntegralRoll));
 
-        handle.applyAngularImpulse(totalTorque);
+        double pTerm = rollError * GYRO_KP;
+        double iTerm = gyroIntegralRoll * GYRO_KI;
+
+        // Anti-oversteer clamp демпфера: за один тик демпфер не может погасить
+        // больше текущей угловой скорости (иначе на большом timeStep/сильном
+        // ударе он бы раскачал корабль в обратную сторону).
+        double dampingRaw = -angVelRoll * GYRO_KD;
+        double dampingClamped = Math.max(-Math.abs(angVelRoll), Math.min(Math.abs(angVelRoll), dampingRaw));
+
+        double dOmega = (pTerm + iTerm) * timeStep + dampingClamped;
+        // Физический предохранитель на изменение угловой скорости за тик.
+        dOmega = Math.max(-GYRO_MAX_RESTORING_DELTA_OMEGA, Math.min(GYRO_MAX_RESTORING_DELTA_OMEGA, dOmega));
+        if (Math.abs(dOmega) < 1e-12) return;
+
+        // ── Перевод целевого dOmega в импульс через реальный тензор инерции ─
+        MassData massData = subLevel.getMassTracker();
+        if (massData == null || massData.isInvalid()) return;
+
+        Vector3d nLocal = orientation.transformInverse(new Vector3d(worldForward));
+        Vector3d invIn = new Vector3d();
+        massData.getInverseInertiaTensor().transform(nLocal, invIn);
+        double s = nLocal.dot(invIn); // = worldForward · (invInertiaTensor_world · worldForward)
+        if (!Double.isFinite(s) || s <= 1e-12) return;
+
+        double impulseScalar = dOmega / s;
+        if (!Double.isFinite(impulseScalar)) return;
+
+        handle.applyAngularImpulse(new Vector3d(worldForward).mul(impulseScalar));
     }
     // ── end gyroscope ─────────────────────────────────────────────────────────
 
