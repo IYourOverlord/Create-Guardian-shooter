@@ -12,13 +12,14 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
 
 /**
- * Меню вкладки NPC — пока без слотов и без данных, только каркас навигации
- * (назад / выход). Контент будет добавлен позже.
+ * Меню вкладки NPC — пока без слотов, только каркас навигации (назад / выход)
+ * и состояние кнопки гироскопической стабилизации Sable.
  */
 public class MachineSoulNpcMenu extends AbstractContainerMenu {
 
     public final MachineSoulBlockEntity blockEntity;
     public final BlockPos blockPos;
+    private boolean gyroStabilizationActive;
 
     // ── Клиентский конструктор ────────────────────────────────────────────────
     public MachineSoulNpcMenu(int id, Inventory inv, RegistryFriendlyByteBuf buf) {
@@ -27,9 +28,12 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
 
     private static MachineSoulBlockEntity readDummy(RegistryFriendlyByteBuf buf) {
         BlockPos pos = buf.readBlockPos();
-        return new MachineSoulBlockEntity(
+        boolean gyro = buf.readBoolean();
+        MachineSoulBlockEntity dummy = new MachineSoulBlockEntity(
                 ModBlockEntities.MACHINE_SOUL.get(), pos,
                 ModBlocks.MACHINE_SOUL.get().defaultBlockState());
+        dummy.setGyroStabilizationActive(gyro);
+        return dummy;
     }
 
     // ── Серверный конструктор ─────────────────────────────────────────────────
@@ -37,7 +41,11 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
         super(ModMenus.MACHINE_SOUL_NPC.get(), id);
         this.blockEntity = be;
         this.blockPos    = be.getBlockPos();
+        this.gyroStabilizationActive = be.isGyroStabilizationActive();
     }
+
+    public boolean isGyroStabilizationActive() { return gyroStabilizationActive; }
+    public void setGyroStabilizationActive(boolean active) { this.gyroStabilizationActive = active; }
 
     @Override public ItemStack quickMoveStack(Player p, int i) { return ItemStack.EMPTY; }
 

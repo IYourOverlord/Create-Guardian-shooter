@@ -41,6 +41,9 @@ public class ModPackets {
         // MachineSoul — кнопка "Только на физической конструкции" на главной странице
         r.playToServer(ToggleMachineSoulSubLevelOnlyPacket.TYPE, ToggleMachineSoulSubLevelOnlyPacket.CODEC, ToggleMachineSoulSubLevelOnlyPacket::handle);
 
+        // MachineSoul — кнопка "Стабилизация" (гироскоп Sable) на вкладке NPC
+        r.playToServer(ToggleMachineSoulGyroStabilizationPacket.TYPE, ToggleMachineSoulGyroStabilizationPacket.CODEC, ToggleMachineSoulGyroStabilizationPacket::handle);
+
         // MachineSoul — кнопка "Таргет на игроков" на вкладке Target
         r.playToServer(ToggleMachineSoulTargetPlayersPacket.TYPE, ToggleMachineSoulTargetPlayersPacket.CODEC, ToggleMachineSoulTargetPlayersPacket::handle);
 

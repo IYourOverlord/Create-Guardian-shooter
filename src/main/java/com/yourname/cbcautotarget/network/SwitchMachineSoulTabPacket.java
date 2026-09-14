@@ -125,7 +125,10 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
     }
 
     public static void openNpc(ServerPlayer sp, MachineSoulBlockEntity soul) {
-        sp.openMenu(simpleProvider(soul, Tab.NPC), buf -> buf.writeBlockPos(soul.getBlockPos()));
+        sp.openMenu(simpleProvider(soul, Tab.NPC), buf -> {
+            buf.writeBlockPos(soul.getBlockPos());
+            buf.writeBoolean(soul.isGyroStabilizationActive());
+        });
     }
 
     /** Создаёт анонимный MenuProvider для openMenu, делегируя createMenu в BE. */

@@ -198,6 +198,14 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     private boolean requireSubLevel = false;
 
     /**
+     * Гироскопическая стабилизация крена (roll) для физических конструкций
+     * Sable — см. {@link #sable$physicsTick}. Включена по умолчанию, чтобы
+     * поведение существующих блоков не изменилось. Управляется отдельной
+     * кнопкой на вкладке NPC.
+     */
+    private boolean gyroStabilizationActive = true;
+
+    /**
      * Разрешён ли поиск/таргетинг игроков. Если выключено — doScan()
      * игнорирует игроков (как будто их нет в радиусе) и снимает сигналы.
      * По умолчанию true.
@@ -333,6 +341,19 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         if (!active) deactivateAll();
         setChanged();
         LOGGER.info("[MachineSoul] setTargetSearchActive pos={} -> {}", worldPosition, active);
+        if (level != null && !level.isClientSide) {
+            level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+        }
+    }
+
+    // ── Гироскопическая стабилизация (Sable) ─────────────────────────────────
+
+    public boolean isGyroStabilizationActive() { return gyroStabilizationActive; }
+
+    public void setGyroStabilizationActive(boolean active) {
+        this.gyroStabilizationActive = active;
+        setChanged();
+        LOGGER.info("[MachineSoul] setGyroStabilizationActive pos={} -> {}", worldPosition, active);
         if (level != null && !level.isClientSide) {
             level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
         }
@@ -511,7 +532,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      */
     @Override
     public void sable$physicsTick(ServerSubLevel subLevel, RigidBodyHandle handle, double timeStep) {
-        if (!targetSearchActive) return;          // блок выключен — гироскоп тоже
+        if (!gyroStabilizationActive) return;      // стабилизация выключена кнопкой на вкладке NPC
         if (!handle.isValid()) return;
 
         BlockState state = getBlockState();
@@ -1137,6 +1158,8 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // Режим "Только на физической конструкции" сохраняется как есть —
         // это настройка поведения блока, а не его текущей активности.
         tag.putBoolean("RequireSubLevel", requireSubLevel);
+        // Стабилизация сохраняется как есть — настройка поведения, а не активности.
+        tag.putBoolean("GyroStabilization", gyroStabilizationActive);
         // Таргетинг игроков сохраняется как есть (не форсируется).
         tag.putBoolean("TargetPlayers", targetPlayers);
         // Фильтр игроков (вайтлист).
@@ -1194,6 +1217,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putInt("StandStillDistance", standStillDistance);
         tag.putBoolean("SearchActive", targetSearchActive);
         tag.putBoolean("RequireSubLevel", requireSubLevel);
+        tag.putBoolean("GyroStabilization", gyroStabilizationActive);
         tag.putBoolean("TargetPlayers", targetPlayers);
         {
             CompoundTag pf = new CompoundTag();
@@ -1232,6 +1256,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             // Отсутствие ключа (старые сохранения/блюпринты без этого поля) → по умолчанию включено.
             targetSearchActive = !tag.contains("SearchActive") || tag.getBoolean("SearchActive");
             requireSubLevel = tag.contains("RequireSubLevel") && tag.getBoolean("RequireSubLevel");
+            gyroStabilizationActive = !tag.contains("GyroStabilization") || tag.getBoolean("GyroStabilization");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = tag.getCompound("PlayerFilter");
@@ -1265,6 +1290,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             }
             targetSearchActive = !schematicBackup.contains("SearchActive") || schematicBackup.getBoolean("SearchActive");
             requireSubLevel = schematicBackup.contains("RequireSubLevel") && schematicBackup.getBoolean("RequireSubLevel");
+            gyroStabilizationActive = !schematicBackup.contains("GyroStabilization") || schematicBackup.getBoolean("GyroStabilization");
             targetPlayers = !schematicBackup.contains("TargetPlayers") || schematicBackup.getBoolean("TargetPlayers");
             if (schematicBackup.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = schematicBackup.getCompound("PlayerFilter");
@@ -1370,6 +1396,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             }
             targetSearchActive = !tag.contains("SearchActive") || tag.getBoolean("SearchActive");
             requireSubLevel = tag.contains("RequireSubLevel") && tag.getBoolean("RequireSubLevel");
+            gyroStabilizationActive = !tag.contains("GyroStabilization") || tag.getBoolean("GyroStabilization");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = tag.getCompound("PlayerFilter");
