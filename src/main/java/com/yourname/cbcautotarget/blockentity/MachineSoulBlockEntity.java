@@ -199,16 +199,18 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     private boolean requireSubLevel = false;
 
     /**
-     * Гироскопическая стабилизация крена (roll) для физических конструкций
-     * Sable — см. {@link #sable$physicsTick}. Включена по умолчанию, чтобы
-     * поведение существующих блоков не изменилось. Управляется отдельной
-     * кнопкой на вкладке NPC.
+     * Гироскопическая стабилизация крена (roll) и тангажа (pitch) для
+     * физических конструкций Sable — см. {@link #sable$physicsTick}.
+     * Держит корабль горизонтально (roll=0, pitch=0), yaw не ограничивается.
+     * Включена по умолчанию, чтобы поведение существующих блоков не
+     * изменилось. Управляется отдельной кнопкой на вкладке NPC.
      */
     private boolean gyroStabilizationActive = true;
 
     // Рантайм-состояние PID стабилизатора (не сохраняется в NBT — накопитель
     // и резервная ось безопасно сбрасываются при перезагрузке чанка/сервера).
     private double gyroIntegralRoll = 0.0;
+    private double gyroIntegralPitch = 0.0;
     @Nullable
     private Vector3d gyroLastValidWorldRight = null;
     // Троттлинг диагностического лога — не спамит на каждый физ-субтик.
@@ -518,29 +520,41 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         return local;
     }
 
-    // ── Gyroscope (roll stabiliser) ───────────────────────────────────────────
-    // Жёстко зашитые коэффициенты критического демпфирования по оси roll.
+    // ── Gyroscope (roll + pitch stabiliser) ───────────────────────────────────
+    // Жёстко зашитые коэффициенты критического демпфирования, общие для обеих
+    // осей коррекции (roll вокруг forward, pitch вокруг worldRight).
     // Никакого конфига/слайдера — стабилизатор всегда работает на пределе,
     // масштабируясь под реальную инерцию конкретного корабля (см. ниже).
-    private static final double GYRO_KP = 6.0;   // П-composante (по углу ошибки, ~sin(крен))
+    private static final double GYRO_KP = 6.0;   // П-composante (по углу ошибки, ~sin(угол))
     private static final double GYRO_KI = 0.8;   // И-составляющая (компенсация постоянного возмущающего момента)
-    private static final double GYRO_KD = 3.5;   // Д-составляющая (гашение угловой скорости по оси forward)
-    // Anti-windup: жёсткий потолок накопителя интеграла.
+    private static final double GYRO_KD = 3.5;   // Д-составляющая (гашение угловой скорости по оси коррекции)
+    // Anti-windup: жёсткий потолок накопителя интеграла (общий для roll/pitch).
     private static final double GYRO_MAX_INTEGRAL = 0.5;
-    // Физический предохранитель: максимальное изменение угловой скорости
-    // вдоль оси forward за один физ-тик, независимо от того, что насчитал PID.
+    // Физический предохранитель на ВОССТАНАВЛИВАЮЩУЮ (П+И) часть импульса —
+    // ограничивает только "толкающую к цели" составляющую, чтобы стабилизатор
+    // не мог разово вкачать в корабль нефизично большой момент. Демпфер (Д)
+    // в этот потолок НЕ упирается (см. ниже) — иначе система может разогнать
+    // angVel выше того, что демпфер способен погасить за тик, что и вызывало
+    // срыв в раскрутку на больших углах/скоростях.
     private static final double GYRO_MAX_RESTORING_DELTA_OMEGA = 0.5;
+    // Жёсткий предохранитель по самой угловой скорости вдоль оси коррекции:
+    // если |angVel| превышает этот порог, демпфер обязан погасить её
+    // ПОЛНОСТЬЮ за один тик (не клипуется потолком выше), чтобы разгон
+    // никогда не мог обогнать способность стабилизатора его гасить.
+    private static final double GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE = 3.0;
     private static final double GYRO_EPS = 1e-6;
 
     /**
      * Вызывается Sable каждый физический тик пока блок находится на sublevel.
-     * Реализует стабилизатор крена (roll) с учётом реального тензора инерции
-     * корабля — PID выдаёт целевое изменение угловой скорости (dOmega), а
-     * фактический импульс получается делением dOmega на эффективную обратную
-     * инерцию корабля вдоль оси forward (n·invI·n), посчитанную в локальных
-     * координатах sublevel'а через MassData.getInverseInertiaTensor().
-     * Это даёт одинаковое время сходимости для любого корабля без единого
-     * настраиваемого параметра.
+     * Реализует стабилизатор крена (roll) и тангажа (pitch) с учётом реального
+     * тензора инерции корабля — PID выдаёт целевое изменение угловой скорости
+     * (dOmega) по каждой оси коррекции, а фактический импульс получается
+     * делением dOmega на эффективную обратную инерцию корабля вдоль этой оси
+     * (n·invI·n), посчитанную в локальных координатах sublevel'а через
+     * MassData.getInverseInertiaTensor(). Это даёт одинаковое время сходимости
+     * для любого корабля без единого настраиваемого параметра.
+     * Yaw (курс вокруг мировой вертикали) намеренно не ограничивается —
+     * стабилизатор только выравнивает корабль горизонтально.
      */
     @Override
     public void sable$physicsTick(ServerSubLevel subLevel, RigidBodyHandle handle, double timeStep) {
@@ -575,9 +589,11 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         Vector3d fwdHoriz = new Vector3d(worldForward.x, 0.0, worldForward.z);
         boolean nearVertical = fwdHoriz.lengthSquared() < GYRO_EPS;
         Vector3d desiredRight;
+        Vector3d desiredForwardHoriz;
         if (!nearVertical) {
             fwdHoriz.normalize();
             desiredRight = new Vector3d(fwdHoriz).cross(worldUp).normalize();
+            desiredForwardHoriz = fwdHoriz;
             // Кэшируем последний валидный «горизонтальный» правый борт — он
             // послужит резервной осью, если корабль уйдёт в вертикальный facing.
             gyroLastValidWorldRight = new Vector3d(desiredRight);
@@ -593,11 +609,25 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             Vector3d projected = new Vector3d(reference)
                     .sub(new Vector3d(worldForward).mul(reference.dot(worldForward)));
             desiredRight = projected.lengthSquared() < 1e-9 ? new Vector3d(shipRight) : projected.normalize();
+            // В гимбал-локе горизонтальный forward не определён — pitch-канал
+            // корректировать не по чему, оставляем предыдущее направление.
+            desiredForwardHoriz = null;
         }
 
-        // Ось коррекции = cross(shipRight, desiredRight); величина ~ sin(угол крена)
-        Vector3d correctionAxis = new Vector3d(shipRight).cross(desiredRight);
-        double rollError = correctionAxis.dot(worldForward); // чистый roll, без yaw/pitch
+        // Ось коррекции roll = cross(shipRight, desiredRight).
+        // ВАЖНО: используем atan2(sin, cos) вместо голого sin (=cross·forward).
+        // sin(угол) неоднозначен и НЕ монотонен за пределами ±90° — на угле
+        // крена, близком к 90°, sin выходит на плато у ±1 и производная по
+        // истинному углу падает почти до нуля, из-за чего П-член перестаёт
+        // толкать систему дальше, она "зависает" на 90°, а после срыва этой
+        // точки (внешним возмущением) знак ошибки относительно РЕАЛЬНОГО угла
+        // может стать обратным на участке 90°..180°, что и раскачивало
+        // систему в неконтролируемое вращение. atan2 даёт монотонную ошибку
+        // на всём диапазоне ±180°, что и требуется для корректного PID.
+        Vector3d rollCorrectionAxis = new Vector3d(shipRight).cross(desiredRight);
+        double rollSin = rollCorrectionAxis.dot(worldForward);
+        double rollCos = shipRight.dot(desiredRight);
+        double rollError = Math.atan2(rollSin, rollCos); // истинный угол крена, радианы, монотонный на ±π
 
         Vector3d angVel = handle.getAngularVelocity(new Vector3d());
         double angVelRoll = angVel.dot(worldForward);
@@ -606,51 +636,132 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         gyroIntegralRoll += rollError * timeStep;
         gyroIntegralRoll = Math.max(-GYRO_MAX_INTEGRAL, Math.min(GYRO_MAX_INTEGRAL, gyroIntegralRoll));
 
-        double pTerm = rollError * GYRO_KP;
-        double iTerm = gyroIntegralRoll * GYRO_KI;
+        double rollPTerm = rollError * GYRO_KP;
+        double rollITerm = gyroIntegralRoll * GYRO_KI;
 
-        // Anti-oversteer clamp демпфера: за один тик демпфер не может погасить
-        // больше текущей угловой скорости (иначе на большом timeStep/сильном
-        // ударе он бы раскачал корабль в обратную сторону).
-        double dampingRaw = -angVelRoll * GYRO_KD;
-        double dampingClamped = Math.max(-Math.abs(angVelRoll), Math.min(Math.abs(angVelRoll), dampingRaw));
+        // Восстанавливающая часть (П+И) — ограничена потолком, стабилизатор
+        // не может резко "рвануть" корабль к цели.
+        double rollRestoring = (rollPTerm + rollITerm) * timeStep;
+        rollRestoring = Math.max(-GYRO_MAX_RESTORING_DELTA_OMEGA, Math.min(GYRO_MAX_RESTORING_DELTA_OMEGA, rollRestoring));
 
-        double dOmega = (pTerm + iTerm) * timeStep + dampingClamped;
-        // Физический предохранитель на изменение угловой скорости за тик.
-        dOmega = Math.max(-GYRO_MAX_RESTORING_DELTA_OMEGA, Math.min(GYRO_MAX_RESTORING_DELTA_OMEGA, dOmega));
-        if (Math.abs(dOmega) < 1e-12) return;
+        // Демпфер (Д) считается ОТДЕЛЬНО от потолка restoring-члена: если
+        // |angVelRoll| велика, демпфер обязан быть способен погасить её
+        // полностью за тик, иначе на больших скоростях (после срыва на
+        // гимбал-плато или сильного внешнего удара) раскачка не гасится и
+        // корабль улетает в бесконтрольное вращение. Демпфер клипуется по
+        // модулю текущей angVel (не может перегасить в обратную сторону), но
+        // НЕ клипуется общим потолком GYRO_MAX_RESTORING_DELTA_OMEGA.
+        double rollDampingRaw = -angVelRoll * GYRO_KD;
+        double rollDampingClamped = Math.max(-Math.abs(angVelRoll), Math.min(Math.abs(angVelRoll), rollDampingRaw));
+        if (Math.abs(angVelRoll) > GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE) {
+            // Жёсткое торможение: полностью гасим angVel за этот тик,
+            // независимо от того, что насчитал КД-коэффициент.
+            rollDampingClamped = -angVelRoll;
+        }
 
-        // ── Перевод целевого dOmega в импульс через реальный тензор инерции ─
+        double rollDOmega = rollRestoring + rollDampingClamped;
+
+        // ── PID по тангажу (П + И с anti-windup + Д) ────────────────────────
+        // Ось коррекции pitch = cross(worldForward, desiredForwardHoriz);
+        // положительная составляющая вдоль shipRight поднимает/опускает нос
+        // независимо от текущего yaw корабля. В гимбал-локе (desiredForwardHoriz
+        // == null) канал pitch пропускается — корректировать не по чему.
+        double pitchDOmega = 0.0;
+        double pitchError = 0.0;
+        double angVelPitch = 0.0;
+        if (desiredForwardHoriz != null) {
+            // См. комментарий у roll: atan2 вместо голого sin, чтобы ошибка
+            // была монотонной на всём диапазоне ±180°, а не только до ±90°.
+            Vector3d pitchCorrectionAxis = new Vector3d(worldForward).cross(desiredForwardHoriz);
+            double pitchSin = pitchCorrectionAxis.dot(shipRight);
+            double pitchCos = worldForward.dot(desiredForwardHoriz);
+            pitchError = Math.atan2(pitchSin, pitchCos); // истинный угол тангажа, радианы
+
+            angVelPitch = angVel.dot(shipRight);
+
+            gyroIntegralPitch += pitchError * timeStep;
+            gyroIntegralPitch = Math.max(-GYRO_MAX_INTEGRAL, Math.min(GYRO_MAX_INTEGRAL, gyroIntegralPitch));
+
+            double pitchPTerm = pitchError * GYRO_KP;
+            double pitchITerm = gyroIntegralPitch * GYRO_KI;
+
+            double pitchRestoring = (pitchPTerm + pitchITerm) * timeStep;
+            pitchRestoring = Math.max(-GYRO_MAX_RESTORING_DELTA_OMEGA, Math.min(GYRO_MAX_RESTORING_DELTA_OMEGA, pitchRestoring));
+
+            // См. комментарий у roll-канала — демпфер не клипуется общим
+            // потолком, чтобы всегда успевать погасить накопленную angVel.
+            double pitchDampingRaw = -angVelPitch * GYRO_KD;
+            double pitchDampingClamped = Math.max(-Math.abs(angVelPitch), Math.min(Math.abs(angVelPitch), pitchDampingRaw));
+            if (Math.abs(angVelPitch) > GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE) {
+                pitchDampingClamped = -angVelPitch;
+            }
+
+            pitchDOmega = pitchRestoring + pitchDampingClamped;
+        }
+
+        if (Math.abs(rollDOmega) < 1e-12 && Math.abs(pitchDOmega) < 1e-12) return;
+
+        // ── Перевод целевых dOmega в импульс через реальный тензор инерции ──
         MassData massData = subLevel.getMassTracker();
         if (massData == null || massData.isInvalid()) {
             gyroDebugLog(() -> "massData недоступен (null=" + (massData == null) + ")");
             return;
         }
 
-        Vector3d nLocal = orientation.transformInverse(new Vector3d(worldForward));
-        Vector3d invIn = new Vector3d();
-        massData.getInverseInertiaTensor().transform(nLocal, invIn);
-        double s = nLocal.dot(invIn); // = worldForward · (invInertiaTensor_world · worldForward)
-        if (!Double.isFinite(s) || s <= 1e-12) {
-            gyroDebugLog(() -> "s недействителен: s=" + s);
-            return;
+        Vector3d totalImpulse = new Vector3d();
+
+        if (Math.abs(rollDOmega) >= 1e-12) {
+            Vector3d nLocal = orientation.transformInverse(new Vector3d(worldForward));
+            Vector3d invIn = new Vector3d();
+            massData.getInverseInertiaTensor().transform(nLocal, invIn);
+            double s = nLocal.dot(invIn); // = worldForward · (invInertiaTensor_world · worldForward)
+            if (Double.isFinite(s) && s > 1e-12) {
+                double impulseScalar = rollDOmega / s;
+                if (Double.isFinite(impulseScalar)) {
+                    totalImpulse.add(new Vector3d(worldForward).mul(impulseScalar));
+                } else {
+                    final double dOmegaLog = rollDOmega, sLog = s;
+                    gyroDebugLog(() -> "roll impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
+                }
+            } else {
+                final double sLog = s;
+                gyroDebugLog(() -> "roll s недействителен: s=" + sLog);
+            }
         }
 
-        double impulseScalar = dOmega / s;
-        final double dOmegaLog = dOmega, sLog = s;
-        if (!Double.isFinite(impulseScalar)) {
-            gyroDebugLog(() -> "impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
-            return;
+        if (Math.abs(pitchDOmega) >= 1e-12) {
+            Vector3d nLocal = orientation.transformInverse(new Vector3d(shipRight));
+            Vector3d invIn = new Vector3d();
+            massData.getInverseInertiaTensor().transform(nLocal, invIn);
+            double s = nLocal.dot(invIn); // = shipRight · (invInertiaTensor_world · shipRight)
+            if (Double.isFinite(s) && s > 1e-12) {
+                double impulseScalar = pitchDOmega / s;
+                if (Double.isFinite(impulseScalar)) {
+                    totalImpulse.add(new Vector3d(shipRight).mul(impulseScalar));
+                } else {
+                    final double dOmegaLog = pitchDOmega, sLog = s;
+                    gyroDebugLog(() -> "pitch impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
+                }
+            } else {
+                final double sLog = s;
+                gyroDebugLog(() -> "pitch s недействителен: s=" + sLog);
+            }
         }
 
-        final double impulseLog = impulseScalar,
-                rollErrorLog = rollError, angVelRollLog = angVelRoll;
+        if (!Double.isFinite(totalImpulse.x) || !Double.isFinite(totalImpulse.y) || !Double.isFinite(totalImpulse.z)) {
+            return;
+        }
+        if (totalImpulse.lengthSquared() < 1e-24) return;
+
+        final double rollErrorLog = rollError, angVelRollLog = angVelRoll, rollDOmegaLog = rollDOmega;
+        final double pitchErrorLog = pitchError, angVelPitchLog = angVelPitch, pitchDOmegaLog = pitchDOmega;
         final boolean nearVerticalLog = nearVertical;
         gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
-                "roll=%.4f angVelRoll=%.4f dOmega=%.5f s=%.6f impulse=%.5f mass=%.2f nearVertical=%b",
-                rollErrorLog, angVelRollLog, dOmegaLog, sLog, impulseLog, massData.getMass(), nearVerticalLog));
+                "roll=%.4f angVelRoll=%.4f dOmegaRoll=%.5f pitch=%.4f angVelPitch=%.4f dOmegaPitch=%.5f mass=%.2f nearVertical=%b",
+                rollErrorLog, angVelRollLog, rollDOmegaLog, pitchErrorLog, angVelPitchLog, pitchDOmegaLog,
+                massData.getMass(), nearVerticalLog));
 
-        handle.applyAngularImpulse(new Vector3d(worldForward).mul(impulseScalar));
+        handle.applyAngularImpulse(totalImpulse);
     }
 
     /**
