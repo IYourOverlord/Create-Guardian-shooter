@@ -228,6 +228,23 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // "просто поворот" — оно уже привело к неконтролируемой раскрутке.
     private int gyroLockdownTicksLeft = 0;
 
+    // ── Резонансный срыв (LOCKDOWN срабатывает повторно без стабильного окна) ──
+    // Проблема из логов: при быстром вращении по yaw гироскопическая прецессия
+    // (yaw→tilt через недиагональные члены тензора инерции) постоянно возвращает
+    // |angVelTilt| к скачку сразу после выхода из LOCKDOWN — PID/breakaway снова
+    // толкает конструкцию, снова срабатывает LOCKDOWN, и так десятками раз подряд
+    // (в логах — почти 2 минуты подряд идущих LOCKDOWN/UNSTICK на pos y=990).
+    // Это НЕ единичный внешний удар (для него LOCKDOWN и создан), а устойчивый
+    // резонанс, который обычная блокировка на GYRO_LOCKDOWN_TICKS не лечит —
+    // требуется отдельный аварийный выключатель на случай, когда сам LOCKDOWN
+    // повторяется без периода спокойной работы между срабатываниями.
+    private int gyroConsecutiveLockdowns = 0;
+    private int gyroLockdownFreeStreakTicks = 0;
+    private int gyroEmergencyOffTicksLeft = 0;
+    private static final int GYRO_LOCKDOWN_STABLE_WINDOW_TICKS = 40; // ~2с без нового LOCKDOWN — предыдущий срыв считается погашенным, счётчик подряд сбрасывается
+    private static final int GYRO_CONSECUTIVE_LOCKDOWNS_THRESHOLD = 4; // столько LOCKDOWN подряд без стабильного окна — явный резонанс, а не единичный удар
+    private static final int GYRO_EMERGENCY_OFF_TICKS = 100; // ~5с полного отключения стабилизатора — даёт конструкции долежать/упасть в любом положении и погасить резонанс естественным демпфированием мира
+
     // ── Состояние breakaway (продавливание застревания) ─────────────────────
     private double gyroPrevTiltError = 0.0;
     private boolean gyroPrevTiltErrorValid = false;
@@ -647,6 +664,16 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     private static final double GYRO_STUCK_ERROR_PROGRESS_EPS = 0.005; // рад — порог "заметного" уменьшения ошибки за тик
     private static final double GYRO_STUCK_MAX_RESTORING_MULTIPLIER = 4.0; // во сколько раз может вырасти потолок при полном застревании
     private static final int GYRO_STUCK_RAMP_TICKS = 40; // за сколько тиков множитель нарастает от 1.0 до максимума
+    // Порог |yawRate|, начиная с которого "застревание" не считаем поводом
+    // расширять restoring-потолок. Проблема из логов: при быстром вращении по
+    // курсу гироскопическая прецессия (yaw→tilt) сама постоянно "подпитывает"
+    // ошибку наклона — tiltError не убывает НЕ из-за статического контакта с
+    // опорой (для которого расширение потолка и задумано), а из-за реального
+    // физического источника момента, который расширенный потолок только
+    // усиливает, провоцируя резонанс и последующий LOCKDOWN. Тот же порог, что
+    // и у yaw-детюнинга restoring-части (GYRO_YAW_DESTAB_THRESHOLD) — при таком
+    // |yawRate| PID и так снижает усиление, расширять потолок вдобавок нельзя.
+    private static final double GYRO_STUCK_YAW_SUPPRESS_THRESHOLD = GYRO_YAW_DESTAB_THRESHOLD;
     // ── Unstick (отрыв от поверхности) ───────────────────────────────────────
     // Проблема, которую НЕ решает restoring-мультипликатор: если корабль
     // упал на бок и лежит на земле, реактивная сила НОРМАЛЬНОЙ РЕАКЦИИ ОПОРЫ
@@ -686,6 +713,29 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     public void sable$physicsTick(ServerSubLevel subLevel, RigidBodyHandle handle, double timeStep) {
         if (!gyroStabilizationActive) return;      // стабилизация выключена кнопкой на вкладке NPC
         if (!handle.isValid()) return;
+
+        // ── Аварийный выключатель при резонансном срыве ──────────────────────
+        // Пока активен — стабилизатор полностью бездействует (даже LOCKDOWN не
+        // применяет импульсы): конструкция долёживает/падает в любом положении
+        // под естественной физикой Sable, резонанс гаснет сам без "подпитки"
+        // со стороны PID. По истечении окна все счётчики срыва обнуляются и
+        // стабилизация возобновляется с чистого состояния.
+        if (gyroEmergencyOffTicksLeft > 0) {
+            gyroEmergencyOffTicksLeft--;
+            if (gyroEmergencyOffTicksLeft == 0) {
+                gyroConsecutiveLockdowns = 0;
+                gyroLockdownFreeStreakTicks = 0;
+                gyroLockdownTicksLeft = 0;
+                gyroIntegralTilt = 0.0;
+                gyroStuckTicks = 0;
+                gyroUnstickCooldownLeft = 0;
+                gyroPrevValid = false;
+                gyroPrevTiltErrorValid = false;
+                gyroCacheTicksLeft = 0;
+                LOGGER.info("[MachineSoul][gyro] pos={} аварийное отключение снято, стабилизация возобновлена", worldPosition);
+            }
+            return;
+        }
 
         BlockState state = getBlockState();
         Direction facing = state.hasProperty(MachineSoulBlock.FACING)
@@ -751,15 +801,40 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             double jumpYaw = Math.abs(yawRate - gyroPrevYawRate);
             if (jumpTilt > GYRO_LOCKDOWN_JUMP_THRESHOLD || jumpYaw > GYRO_LOCKDOWN_JUMP_THRESHOLD) {
                 gyroLockdownTicksLeft = GYRO_LOCKDOWN_TICKS;
+                // ── Счётчик подряд идущих LOCKDOWN (детектор резонансного срыва) ──
+                // Если с прошлого LOCKDOWN не прошло GYRO_LOCKDOWN_STABLE_WINDOW_TICKS
+                // спокойной работы — это не новый независимый удар, а продолжение
+                // того же незатухающего резонанса (см. лог: LOCKDOWN → PID → UNSTICK
+                // → снова LOCKDOWN спустя доли секунды, десятки раз подряд).
+                if (gyroLockdownFreeStreakTicks < GYRO_LOCKDOWN_STABLE_WINDOW_TICKS) {
+                    gyroConsecutiveLockdowns++;
+                } else {
+                    gyroConsecutiveLockdowns = 1;
+                }
+                gyroLockdownFreeStreakTicks = 0;
                 final double jumpTiltLog = jumpTilt, jumpYawLog = jumpYaw;
                 gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
-                        "LOCKDOWN TRIGGERED: jumpTilt=%.3f jumpYaw=%.3f > порог=%.3f, блокировка на %d тиков",
-                        jumpTiltLog, jumpYawLog, GYRO_LOCKDOWN_JUMP_THRESHOLD, GYRO_LOCKDOWN_TICKS));
+                        "LOCKDOWN TRIGGERED: jumpTilt=%.3f jumpYaw=%.3f > порог=%.3f, блокировка на %d тиков, подряд=%d",
+                        jumpTiltLog, jumpYawLog, GYRO_LOCKDOWN_JUMP_THRESHOLD, GYRO_LOCKDOWN_TICKS, gyroConsecutiveLockdowns));
+
+                if (gyroConsecutiveLockdowns >= GYRO_CONSECUTIVE_LOCKDOWNS_THRESHOLD) {
+                    gyroEmergencyOffTicksLeft = GYRO_EMERGENCY_OFF_TICKS;
+                    LOGGER.info("[MachineSoul][gyro] pos={} РЕЗОНАНСНЫЙ СРЫВ: {} LOCKDOWN подряд без стабильного окна, "
+                            + "стабилизатор аварийно отключён на {} тиков", worldPosition, gyroConsecutiveLockdowns, GYRO_EMERGENCY_OFF_TICKS);
+                }
             }
         }
         gyroPrevAngVelTilt = angVelTilt;
         gyroPrevYawRate = yawRate;
         gyroPrevValid = true;
+        // Считаем тики без нового LOCKDOWN — растёт на каждом тике этой ветки
+        // (т.е. пока не сработал new LOCKDOWN выше и не активен старый ниже
+        // не проверяется здесь намеренно: инкремент должен идти независимо от
+        // того, идёт ли ещё старая блокировка, иначе "стабильное окно" никогда
+        // не наберётся во время затяжной серии GYRO_LOCKDOWN_TICKS-блокировок).
+        if (gyroLockdownFreeStreakTicks < Integer.MAX_VALUE) {
+            gyroLockdownFreeStreakTicks++;
+        }
 
         if (gyroLockdownTicksLeft > 0) {
             gyroLockdownTicksLeft--;
@@ -817,12 +892,15 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         gyroPrevTiltErrorValid = true;
 
         double restoringMultiplier = 1.0;
-        if (gyroStuckTicks > GYRO_STUCK_TICKS_THRESHOLD) {
+        if (gyroStuckTicks > GYRO_STUCK_TICKS_THRESHOLD && Math.abs(yawRate) <= GYRO_STUCK_YAW_SUPPRESS_THRESHOLD) {
             // Плавный линейный разгон множителя от 1.0 до
             // GYRO_STUCK_MAX_RESTORING_MULTIPLIER за GYRO_STUCK_RAMP_TICKS
             // тиков после подтверждения застревания — не скачок, чтобы не
             // создать собственный резкий импульс, который заново потревожит
-            // соседей по конструкции.
+            // соседей по конструкции. Не расширяем потолок при быстром yaw —
+            // см. GYRO_STUCK_YAW_SUPPRESS_THRESHOLD: там "застревание" вызвано
+            // прецессией, а не статическим контактом, и усиление импульса
+            // только раскачивает резонанс.
             int ticksIntoStuck = gyroStuckTicks - GYRO_STUCK_TICKS_THRESHOLD;
             double rampT = Math.min(1.0, ticksIntoStuck / (double) GYRO_STUCK_RAMP_TICKS);
             restoringMultiplier = 1.0 + (GYRO_STUCK_MAX_RESTORING_MULTIPLIER - 1.0) * rampT;
@@ -845,7 +923,8 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // единственный гейт — cooldown: срабатывает при первом превышении
         // порога и на каждом первом тике после истечения кулдауна, пока
         // застревание продолжается.
-        if (gyroStuckTicks >= GYRO_UNSTICK_TICKS_THRESHOLD && gyroUnstickCooldownLeft <= 0) {
+        if (gyroStuckTicks >= GYRO_UNSTICK_TICKS_THRESHOLD && gyroUnstickCooldownLeft <= 0
+                && Math.abs(yawRate) <= GYRO_STUCK_YAW_SUPPRESS_THRESHOLD) {
             MassData massDataUnstick = subLevel.getMassTracker();
             if (massDataUnstick != null && !massDataUnstick.isInvalid() && massDataUnstick.getMass() > GYRO_EPS) {
                 // Импульс = масса × желаемая скорость (p = m·v) — стандартная
@@ -1058,10 +1137,11 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         final boolean nearVerticalLog = nearVertical;
         final double restoringMultiplierLog = restoringMultiplier;
         final int stuckTicksLog = gyroStuckTicks;
+        final int consecutiveLockdownsLog = gyroConsecutiveLockdowns;
         gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
-                "tilt=%.4f angVelTilt=%.4f dOmegaTilt=%.5f yawRate(untouched)=%.4f mass=%.2f nearVertical=%b stuckTicks=%d restoringMult=%.2f",
+                "tilt=%.4f angVelTilt=%.4f dOmegaTilt=%.5f yawRate(untouched)=%.4f mass=%.2f nearVertical=%b stuckTicks=%d restoringMult=%.2f consecutiveLockdowns=%d",
                 tiltErrorLog, angVelTiltLog, tiltDOmegaLog, yawRateLog,
-                massData.getMass(), nearVerticalLog, stuckTicksLog, restoringMultiplierLog));
+                massData.getMass(), nearVerticalLog, stuckTicksLog, restoringMultiplierLog, consecutiveLockdownsLog));
 
         handle.applyAngularImpulse(totalImpulse);
     }
