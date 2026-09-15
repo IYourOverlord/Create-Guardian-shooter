@@ -228,6 +228,12 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // "просто поворот" — оно уже привело к неконтролируемой раскрутке.
     private int gyroLockdownTicksLeft = 0;
 
+    // ── Состояние breakaway (продавливание застревания) ─────────────────────
+    private double gyroPrevTiltError = 0.0;
+    private boolean gyroPrevTiltErrorValid = false;
+    private int gyroStuckTicks = 0;
+    private int gyroUnstickCooldownLeft = 0;
+
     // ── Кэш эффективной инерции вдоль оси наклона (оптимизация) ─────────────
     // n·invI·n дорого считать каждый физ-субтик (matrix transform + dot).
     // tiltAxis обычно меняется плавно между соседними тиками при штатной
@@ -624,6 +630,41 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // GYRO_MIN_GAIN_AT_HIGH_YAW (yaw быстрый).
     private static final double GYRO_YAW_DESTAB_THRESHOLD = 1.0; // рад/с, откуда начинаем снижать усиление
     private static final double GYRO_MIN_GAIN_AT_HIGH_YAW = 0.15;
+    // ── Breakaway (продавливание застревания) ───────────────────────────────
+    // Проблема из логов: после резкого сброса перевеса корабль завис на
+    // tilt≈0.78 рад (~45°) на 23+ секунды, dOmegaTilt≈0.22 держался
+    // постоянным — restoring-потолок (1.5) слишком мал, чтобы "продавить"
+    // реактивное сопротивление статического контакта/опоры, а понижать сам
+    // GYRO_MAX_RESTORING_DELTA_OMEGA обратно до 4.0 нельзя — это снова
+    // взводит риск резонансного разгона (см. предыдущий фикс). Вместо этого
+    // отслеживаем ЗАСТРЕВАНИЕ: если |tiltError| не уменьшается заметно на
+    // протяжении GYRO_STUCK_TICKS_THRESHOLD тиков подряд, restoring-потолок
+    // временно и плавно повышается пропорционально длительности застревания
+    // (в отличие от интеграла — это НЕ накапливается бесконечно и полностью
+    // сбрасывается, как только tiltError снова начинает уменьшаться, поэтому
+    // не создаёт отложенного взрыва при внезапном исчезновении препятствия).
+    private static final int GYRO_STUCK_TICKS_THRESHOLD = 15; // ~0.75с при 20 тиков/сек — застревание считается подтверждённым
+    private static final double GYRO_STUCK_ERROR_PROGRESS_EPS = 0.005; // рад — порог "заметного" уменьшения ошибки за тик
+    private static final double GYRO_STUCK_MAX_RESTORING_MULTIPLIER = 4.0; // во сколько раз может вырасти потолок при полном застревании
+    private static final int GYRO_STUCK_RAMP_TICKS = 40; // за сколько тиков множитель нарастает от 1.0 до максимума
+    // ── Unstick (отрыв от поверхности) ───────────────────────────────────────
+    // Проблема, которую НЕ решает restoring-мультипликатор: если корабль
+    // упал на бок и лежит на земле, реактивная сила НОРМАЛЬНОЙ РЕАКЦИИ ОПОРЫ
+    // (контактное трение) гасит угловой импульс независимо от его величины —
+    // это не "недостаточно сильный толчок", а другой физический канал
+    // воздействия (контакт), который чисто угловой impulseScalar/s в принципе
+    // не может пересилить. В логах: 31 секунда (stuckTicks=1214) на
+    // tilt=0.45 с restoringMult=4.0 без малейшего прогресса. Решение —
+    // дополнительный ЛИНЕЙНЫЙ импульс вдоль worldUp ("подпрыгнуть"), который
+    // на короткое время отрывает корабль от поверхности, снимая контактную
+    // реакцию и позволяя угловому восстановлению наконец подействовать.
+    private static final int GYRO_UNSTICK_TICKS_THRESHOLD = 60; // ~3с непрерывного застревания при 20 тик/сек — явно контакт с опорой, не временное сопротивление
+    private static final int GYRO_UNSTICK_COOLDOWN_TICKS = 60; // не повторять чаще раза в ~3с — даёт время физике отреагировать на предыдущий толчок
+    // Импульс подбирается пропорционально массе через ту же getInverseInertiaTensor
+    // логику, что и остальной стабилизатор — используем реальную массу корабля
+    // (massData.getMass()), чтобы толчок был одинаково эффективен для лёгких
+    // и тяжёлых конструкций, а не фиксированной величиной "на глаз".
+    private static final double GYRO_UNSTICK_LINEAR_VELOCITY_KICK = 1.5; // м/с, желаемая вертикальная скорость сразу после толчка
 
     /**
      * Вызывается Sable каждый физический тик пока блок находится на sublevel.
@@ -731,6 +772,8 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             // PID не рванул сразу на накопленную за время блокировки ошибку.
             gyroIntegralTilt = 0.0;
             gyroCacheTicksLeft = 0; // форсируем пересчёт s после блокировки — ориентация могла сильно измениться
+            gyroStuckTicks = 0; // после блокировки застревание не актуально — ситуация изменилась
+            gyroPrevTiltErrorValid = false;
             if (angVel.lengthSquared() > GYRO_EPS * GYRO_EPS) {
                 MassData massDataLockdown = subLevel.getMassTracker();
                 if (massDataLockdown != null && !massDataLockdown.isInvalid()) {
@@ -751,6 +794,82 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             final int ticksLeftLog = gyroLockdownTicksLeft;
             gyroDebugLog(() -> "LOCKDOWN active, ticksLeft=" + ticksLeftLog);
             return; // обычный PID не выполняется, пока блокировка активна
+        }
+
+        // ── Breakaway: обнаружение застревания и адаптивный потолок restoring ──
+        // "Застревание" = |tiltError| не уменьшается заметно тик от тика,
+        // несмотря на то что стабилизатор активно толкает (типичный признак
+        // статического контакта/реактивной опоры, продавить которую нужно
+        // бОльшим восстанавливающим импульсом, а не большей угловой скоростью
+        // демпфера — поэтому не трогаем GYRO_MAX_DELTA_OMEGA_PER_TICK/KD).
+        double absTiltError = Math.abs(tiltError);
+        if (gyroPrevTiltErrorValid && absTiltError > 0.02) { // ниже 0.02 рад (~1°) застревание неважно — почти выровнено
+            double progress = gyroPrevTiltError - absTiltError; // >0 если ошибка уменьшается
+            if (progress < GYRO_STUCK_ERROR_PROGRESS_EPS) {
+                gyroStuckTicks++;
+            } else {
+                gyroStuckTicks = 0;
+            }
+        } else {
+            gyroStuckTicks = 0;
+        }
+        gyroPrevTiltError = absTiltError;
+        gyroPrevTiltErrorValid = true;
+
+        double restoringMultiplier = 1.0;
+        if (gyroStuckTicks > GYRO_STUCK_TICKS_THRESHOLD) {
+            // Плавный линейный разгон множителя от 1.0 до
+            // GYRO_STUCK_MAX_RESTORING_MULTIPLIER за GYRO_STUCK_RAMP_TICKS
+            // тиков после подтверждения застревания — не скачок, чтобы не
+            // создать собственный резкий импульс, который заново потревожит
+            // соседей по конструкции.
+            int ticksIntoStuck = gyroStuckTicks - GYRO_STUCK_TICKS_THRESHOLD;
+            double rampT = Math.min(1.0, ticksIntoStuck / (double) GYRO_STUCK_RAMP_TICKS);
+            restoringMultiplier = 1.0 + (GYRO_STUCK_MAX_RESTORING_MULTIPLIER - 1.0) * rampT;
+        }
+
+        // ── Unstick: отрыв от поверхности при затяжном застревании ──────────
+        // Расширенный restoring-потолок продавливает ВРЕМЕННОЕ сопротивление
+        // (например, сброс груза, о котором опора ещё "помнит" через упругость
+        // контакта), но бессилен против УСТОЙЧИВОГО контакта с землёй — сила
+        // реакции опоры действует по другому физическому каналу и гасит
+        // угловой импульс независимо от его величины. Если застревание длится
+        // намного дольше нормального продавливания (GYRO_UNSTICK_TICKS_THRESHOLD
+        // тиков), считаем это контактом с опорой и даём короткий вертикальный
+        // толчок, чтобы физически оторвать корабль от поверхности.
+        // ИСПРАВЛЕНО: было `gyroStuckTicks % GYRO_UNSTICK_TICKS_THRESHOLD == 0` —
+        // точное совпадение по модулю ненадёжно, так как физтик может идти
+        // неравномерно (суб-тики Sable, троттлинг сервера), из-за чего
+        // gyroStuckTicks способен "перепрыгнуть" нужное кратное значение и
+        // условие никогда не выполнится за весь эпизод застревания. Теперь
+        // единственный гейт — cooldown: срабатывает при первом превышении
+        // порога и на каждом первом тике после истечения кулдауна, пока
+        // застревание продолжается.
+        if (gyroStuckTicks >= GYRO_UNSTICK_TICKS_THRESHOLD && gyroUnstickCooldownLeft <= 0) {
+            MassData massDataUnstick = subLevel.getMassTracker();
+            if (massDataUnstick != null && !massDataUnstick.isInvalid() && massDataUnstick.getMass() > GYRO_EPS) {
+                // Импульс = масса × желаемая скорость (p = m·v) — стандартная
+                // формула, даёт одинаковый эффект отрыва независимо от массы
+                // конкретной конструкции.
+                double impulseMagnitude = massDataUnstick.getMass() * GYRO_UNSTICK_LINEAR_VELOCITY_KICK;
+                Vector3d unstickImpulse = new Vector3d(worldUp).mul(impulseMagnitude);
+                if (Double.isFinite(unstickImpulse.x) && Double.isFinite(unstickImpulse.y) && Double.isFinite(unstickImpulse.z)) {
+                    handle.applyLinearAndAngularImpulse(unstickImpulse, new Vector3d(0.0, 0.0, 0.0), true);
+                    gyroUnstickCooldownLeft = GYRO_UNSTICK_COOLDOWN_TICKS;
+                    // Лог UNSTICK не троттлируется наравне с обычным диагностическим
+                    // логом (используется LOGGER напрямую) — иначе событие могло
+                    // "проглатываться" общим 1-секундным троттлингом gyroDebugLog,
+                    // если обычный лог этого же тика успевал занять окно первым,
+                    // из-за чего в предыдущих логах UNSTICK не было видно вообще,
+                    // хотя импульс применялся.
+                    final int stuckTicksLog2 = gyroStuckTicks;
+                    LOGGER.info("[MachineSoul][gyro] pos={} UNSTICK: застревание {} тиков подряд, вертикальный толчок применён (impulse={})",
+                            worldPosition, stuckTicksLog2, String.format(java.util.Locale.ROOT, "%.2f", impulseMagnitude));
+                }
+            }
+        }
+        if (gyroUnstickCooldownLeft > 0) {
+            gyroUnstickCooldownLeft--;
         }
 
         // ── PID по единой оси наклона (П + И с anti-windup + Д) ─────────────
@@ -776,9 +895,13 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             double tiltITerm = gyroIntegralTilt * GYRO_KI * yawGain;
 
             // Восстанавливающая часть (П+И) — ограничена потолком, стабилизатор
-            // не может резко "рвануть" корабль к цели.
+            // не может резко "рвануть" корабль к цели. Потолок временно
+            // расширяется restoringMultiplier'ом при подтверждённом
+            // застревании (см. блок Breakaway выше) — иначе он не может
+            // "продавить" статическое сопротивление опоры.
+            double effectiveRestoringCap = GYRO_MAX_RESTORING_DELTA_OMEGA * restoringMultiplier;
             double tiltRestoring = (tiltPTerm + tiltITerm) * timeStep;
-            tiltRestoring = Math.max(-GYRO_MAX_RESTORING_DELTA_OMEGA, Math.min(GYRO_MAX_RESTORING_DELTA_OMEGA, tiltRestoring));
+            tiltRestoring = Math.max(-effectiveRestoringCap, Math.min(effectiveRestoringCap, tiltRestoring));
 
             // Демпфер (Д) считается ОТДЕЛЬНО от потолка restoring-члена: если
             // |angVelTilt| велика, демпфер обязан быть способен погасить её
@@ -811,6 +934,8 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             // перевёрнут вверх дном) — ось наклона не определена, интеграл не
             // копим, чтобы не накапливать шум на неопределённом направлении.
             gyroIntegralTilt = 0.0;
+            gyroStuckTicks = 0;
+            gyroPrevTiltErrorValid = false;
         }
 
         if (Math.abs(tiltDOmega) < 1e-12) return;
@@ -931,10 +1056,12 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         final double tiltErrorLog = tiltError, angVelTiltLog = angVelTilt, tiltDOmegaLog = tiltDOmega;
         final double yawRateLog = yawRate;
         final boolean nearVerticalLog = nearVertical;
+        final double restoringMultiplierLog = restoringMultiplier;
+        final int stuckTicksLog = gyroStuckTicks;
         gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
-                "tilt=%.4f angVelTilt=%.4f dOmegaTilt=%.5f yawRate(untouched)=%.4f mass=%.2f nearVertical=%b",
+                "tilt=%.4f angVelTilt=%.4f dOmegaTilt=%.5f yawRate(untouched)=%.4f mass=%.2f nearVertical=%b stuckTicks=%d restoringMult=%.2f",
                 tiltErrorLog, angVelTiltLog, tiltDOmegaLog, yawRateLog,
-                massData.getMass(), nearVerticalLog));
+                massData.getMass(), nearVerticalLog, stuckTicksLog, restoringMultiplierLog));
 
         handle.applyAngularImpulse(totalImpulse);
     }
