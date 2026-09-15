@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "Spelarnamn...",
   "gui.cbc_autotarget.whitelist.limit": "Gräns: 50 spelare nådd",
   "gui.cbc_autotarget.soul.title": "Maskinsjäl",
-  "gui.cbc_autotarget.soul.save": "Avsluta",
+  "gui.cbc_autotarget.soul.save": "Spara",
   "gui.cbc_autotarget.soul.assign_title": "Tilldela Redstone-länk",
   "gui.cbc_autotarget.soul.confirm": "Bekräfta",
   "gui.cbc_autotarget.soul.clear": "Rensa",

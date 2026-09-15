@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "プレイヤー名...",
   "gui.cbc_autotarget.whitelist.limit": "制限: 50プレイヤーに達しました",
   "gui.cbc_autotarget.soul.title": "マシンソウル",
-  "gui.cbc_autotarget.soul.save": "退出",
+  "gui.cbc_autotarget.soul.save": "保存",
   "gui.cbc_autotarget.soul.assign_title": "レッドストーンリンクを割り当て",
   "gui.cbc_autotarget.soul.confirm": "確認",
   "gui.cbc_autotarget.soul.clear": "クリア",

@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "Nom du joueur...",
   "gui.cbc_autotarget.whitelist.limit": "Limite : 50 joueurs atteints",
   "gui.cbc_autotarget.soul.title": "Âme de la Machine",
-  "gui.cbc_autotarget.soul.save": "Quitter",
+  "gui.cbc_autotarget.soul.save": "Enregistrer",
   "gui.cbc_autotarget.soul.assign_title": "Assigner un Lien Redstone",
   "gui.cbc_autotarget.soul.confirm": "Confirmer",
   "gui.cbc_autotarget.soul.clear": "Effacer",

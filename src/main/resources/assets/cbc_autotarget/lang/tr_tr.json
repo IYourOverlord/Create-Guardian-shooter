@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "Oyuncu adı...",
   "gui.cbc_autotarget.whitelist.limit": "Sınır: 50 oyuncu ulaşıldı",
   "gui.cbc_autotarget.soul.title": "Makine Ruhu",
-  "gui.cbc_autotarget.soul.save": "Çıkış",
+  "gui.cbc_autotarget.soul.save": "Kaydet",
   "gui.cbc_autotarget.soul.assign_title": "Redstone Bağlantısı Ata",
   "gui.cbc_autotarget.soul.confirm": "Onayla",
   "gui.cbc_autotarget.soul.clear": "Temizle",

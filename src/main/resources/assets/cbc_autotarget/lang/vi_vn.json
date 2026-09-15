@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "Tên người chơi...",
   "gui.cbc_autotarget.whitelist.limit": "Giới hạn: đạt 50 người chơi",
   "gui.cbc_autotarget.soul.title": "Linh Hồn Máy",
-  "gui.cbc_autotarget.soul.save": "Thoát",
+  "gui.cbc_autotarget.soul.save": "Lưu",
   "gui.cbc_autotarget.soul.assign_title": "Gán Liên kết Redstone",
   "gui.cbc_autotarget.soul.confirm": "Xác nhận",
   "gui.cbc_autotarget.soul.clear": "Xóa",

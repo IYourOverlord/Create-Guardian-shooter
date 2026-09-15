@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "ชื่อผู้เล่น...",
   "gui.cbc_autotarget.whitelist.limit": "ขีดจำกัด: ถึง 50 ผู้เล่น",
   "gui.cbc_autotarget.soul.title": "จิตวิญญาณของเครื่อง",
-  "gui.cbc_autotarget.soul.save": "ออก",
+  "gui.cbc_autotarget.soul.save": "บันทึก",
   "gui.cbc_autotarget.soul.assign_title": "กำหนดการเชื่อมต่อ Redstone",
   "gui.cbc_autotarget.soul.confirm": "ยืนยัน",
   "gui.cbc_autotarget.soul.clear": "ลบ",

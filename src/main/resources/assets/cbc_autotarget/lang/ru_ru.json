@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "Имя игрока...",
   "gui.cbc_autotarget.whitelist.limit": "Лимит: достигнуто 50 игроков",
   "gui.cbc_autotarget.soul.title": "Душа машины",
-  "gui.cbc_autotarget.soul.save": "Выход",
+  "gui.cbc_autotarget.soul.save": "Сохранить",
   "gui.cbc_autotarget.soul.assign_title": "Назначить связь редстоуна",
   "gui.cbc_autotarget.soul.confirm": "Подтвердить",
   "gui.cbc_autotarget.soul.clear": "Очистить",

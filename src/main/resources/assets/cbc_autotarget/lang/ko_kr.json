@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "플레이어 이름...",
   "gui.cbc_autotarget.whitelist.limit": "제한: 50명의 플레이어 도달",
   "gui.cbc_autotarget.soul.title": "기계 영혼",
-  "gui.cbc_autotarget.soul.save": "나가기",
+  "gui.cbc_autotarget.soul.save": "저장",
   "gui.cbc_autotarget.soul.assign_title": "레드스톤 링크 할당",
   "gui.cbc_autotarget.soul.confirm": "확인",
   "gui.cbc_autotarget.soul.clear": "지우기",

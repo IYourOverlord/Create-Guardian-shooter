@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "Speelernaam...",
   "gui.cbc_autotarget.whitelist.limit": "Limiet: 50 spelers bereikt",
   "gui.cbc_autotarget.soul.title": "Mashineziel",
-  "gui.cbc_autotarget.soul.save": "Afsluiten",
+  "gui.cbc_autotarget.soul.save": "Opslaan",
   "gui.cbc_autotarget.soul.assign_title": "Redstone Koppeling Toewijzen",
   "gui.cbc_autotarget.soul.confirm": "Bevestigen",
   "gui.cbc_autotarget.soul.clear": "Wissen",

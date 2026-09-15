@@ -46,7 +46,7 @@
   "gui.cbc_autotarget.whitelist.input_hint": "Nama pemain...",
   "gui.cbc_autotarget.whitelist.limit": "Batas: 50 pemain tercapai",
   "gui.cbc_autotarget.soul.title": "Jiwa Mesin",
-  "gui.cbc_autotarget.soul.save": "Keluar",
+  "gui.cbc_autotarget.soul.save": "Simpan",
   "gui.cbc_autotarget.soul.assign_title": "Tetapkan Tautan Redstone",
   "gui.cbc_autotarget.soul.confirm": "Konfirmasi",
   "gui.cbc_autotarget.soul.clear": "Hapus",
