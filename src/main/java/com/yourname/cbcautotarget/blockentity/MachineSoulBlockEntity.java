@@ -209,12 +209,39 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
     // Рантайм-состояние PID стабилизатора (не сохраняется в NBT — накопитель
     // и резервная ось безопасно сбрасываются при перезагрузке чанка/сервера).
-    private double gyroIntegralRoll = 0.0;
-    private double gyroIntegralPitch = 0.0;
-    @Nullable
-    private Vector3d gyroLastValidWorldRight = null;
+    private double gyroIntegralTilt = 0.0;
     // Троттлинг диагностического лога — не спамит на каждый физ-субтик.
     private long gyroLastLogMs = 0L;
+
+    // ── Emergency lockdown (аварийная блокировка) ───────────────────────────
+    // Предыдущие значения angVelTilt/yawRate — нужны, чтобы обнаружить
+    // АНОМАЛЬНЫЙ СКАЧОК за один тик (внешняя гироскопическая прецессия,
+    // столкновение, взаимодействие с другими кораблями и т.п.), а не просто
+    // превышение абсолютного порога, который срабатывает уже постфактум.
+    private double gyroPrevAngVelTilt = 0.0;
+    private double gyroPrevYawRate = 0.0;
+    private boolean gyroPrevValid = false;
+    // Счётчик оставшихся тиков аварийной блокировки. Пока > 0, стабилизатор
+    // игнорирует обычный PID и жёстко гасит ВСЮ angVel (включая yaw) прямым
+    // импульсом — это единственный режим, где yaw трогается намеренно,
+    // потому что при таком скачке нельзя доверять, что оставшееся вращение
+    // "просто поворот" — оно уже привело к неконтролируемой раскрутке.
+    private int gyroLockdownTicksLeft = 0;
+
+    // ── Кэш эффективной инерции вдоль оси наклона (оптимизация) ─────────────
+    // n·invI·n дорого считать каждый физ-субтик (matrix transform + dot).
+    // tiltAxis обычно меняется плавно между соседними тиками при штатной
+    // работе стабилизатора, поэтому переиспользуем последнее значение s,
+    // пока ось не отклонилась заметно и не истёк лимит тиков кэша — экономит
+    // одно matrix-умножение на большинстве тиков без потери точности сверх
+    // допустимой (масса/распределение корабля тоже меняются медленно
+    // относительно частоты физтика).
+    private Vector3d gyroCachedAxis = null;
+    private double gyroCachedS = Double.NaN;
+    private int gyroCacheTicksLeft = 0;
+    private static final double GYRO_CACHE_AXIS_COS_THRESHOLD = 0.999; // ~2.5° отклонения — пересчитать
+    private static final int GYRO_CACHE_MAX_TICKS = 10; // принудительный пересчёт не реже раза в 10 тиков
+
 
     /**
      * Разрешён ли поиск/таргетинг игроков. Если выключено — doScan()
@@ -520,14 +547,17 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         return local;
     }
 
-    // ── Gyroscope (roll + pitch stabiliser) ───────────────────────────────────
-    // Жёстко зашитые коэффициенты критического демпфирования, общие для обеих
-    // осей коррекции (roll вокруг forward, pitch вокруг worldRight).
-    // Никакого конфига/слайдера — стабилизатор всегда работает на пределе,
-    // масштабируясь под реальную инерцию конкретного корабля (см. ниже).
-    private static final double GYRO_KP = 6.0;   // П-composante (по углу ошибки, ~sin(угол))
+    // ── Gyroscope (единая связная стабилизация наклона, yaw исключён) ─────────
+    // Жёстко зашитые коэффициенты критического демпфирования для ЕДИНОЙ оси
+    // коррекции наклона (tiltAxis = cross(currentUp, worldUp)). В отличие от
+    // прежней версии с двумя независимыми PID (roll вокруг forward, pitch
+    // вокруг shipRight), здесь ошибка наклона — один связный вектор: корабль
+    // либо наклонён (в любом сочетании крена/тангажа), либо нет. Это устраняет
+    // "борьбу" двух контуров через недиагональные члены тензора инерции,
+    // которая и была источником нестабильности/раскачки в старой реализации.
+    private static final double GYRO_KP = 6.0;   // П-составляющая (по углу наклона, атан2)
     private static final double GYRO_KI = 0.8;   // И-составляющая (компенсация постоянного возмущающего момента)
-    private static final double GYRO_KD = 3.5;   // Д-составляющая (гашение угловой скорости по оси коррекции)
+    private static final double GYRO_KD = 3.5;   // Д-составляющая (гашение угловой скорости по оси коррекции наклона)
     // Anti-windup: жёсткий потолок накопителя интеграла (общий для roll/pitch).
     // Поднят с 0.5 до 4.0: при статическом контакте корабля с поверхностью
     // (например, корабль осел и упирается носом/углом в землю) реактивный
@@ -543,23 +573,57 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // в этот потолок НЕ упирается (см. ниже) — иначе система может разогнать
     // angVel выше того, что демпфер способен погасить за тик, что и вызывало
     // срыв в раскрутку на больших углах/скоростях.
-    // Поднят с 0.5 до 4.0 по той же причине, что и GYRO_MAX_INTEGRAL — иначе
-    // restoring-часть режется раньше, чем накопленный интеграл успевает
-    // пробить статическую реакцию опоры. Защита от нефизичного разгона теперь
-    // обеспечивается отдельным предохранителем по итоговой |angVel| ниже (см.
-    // "Абсолютный предохранитель от взрыва"), а не этим потолком.
-    private static final double GYRO_MAX_RESTORING_DELTA_OMEGA = 4.0;
+    // Поднят с 0.5, снижен обратно до 1.5 при добавлении rate-limit'а на
+    // dOmega/тик и yaw-детюнинга (GYRO_MAX_DELTA_OMEGA_PER_TICK, yawGain) —
+    // restoring-часть больше не единственная защита от разгона, поэтому она
+    // может быть умеренной и не должна сама провоцировать резонанс с
+    // гироскопической прецессией на высоких |yawRate|.
+    private static final double GYRO_MAX_RESTORING_DELTA_OMEGA = 1.5;
     // Жёсткий предохранитель по самой угловой скорости вдоль оси коррекции:
     // если |angVel| превышает этот порог, демпфер обязан погасить её
     // ПОЛНОСТЬЮ за один тик (не клипуется потолком выше), чтобы разгон
     // никогда не мог обогнать способность стабилизатора его гасить.
-    // Согласован с поднятым GYRO_MAX_RESTORING_DELTA_OMEGA (4.0): порог должен
-    // быть не меньше него, иначе абсолютный предохранитель по итоговой angVel
-    // (см. ниже, allowedMag = max(этот_порог, currentMag)) сам обрежет именно
-    // тот восстанавливающий импульс, который нужен для продавливания
-    // статического контакта с поверхностью.
-    private static final double GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE = 5.0;
+    // Снижен с 5.0 до 2.0: в логах разгон происходил ЗА ОДИН тик (0.04→3.68
+    // рад/с), поэтому чем раньше срабатывает HARD BRAKE, тем меньше энергии
+    // успевает накопиться до жёсткого гашения.
+    private static final double GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE = 2.0;
     private static final double GYRO_EPS = 1e-6;
+    // Rate-limit на САМ impulseScalar (dOmegaTilt/s), а не только на итоговую
+    // |angVel| после применения. Ловит взрывной разгон дифференциальной
+    // прецессии: при быстром вращении по yaw в присутствии малого наклона
+    // возникает гироскопический момент через недиагональные члены тензора
+    // инерции (ω×Iω), который стабилизатор не видит заранее — он проявляется
+    // как внезапный скачок |angVelTilt| ЗА ОДИН ТИК (в логах: с -0.04 до -3.68
+    // рад/с), т.е. до того как currentMag успевает превысить
+    // GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE и включить HARD BRAKE. Ограничиваем
+    // прирост |angVelTilt|, который стабилизатор готов внести за один тик,
+    // независимо от того, что насчитал PID/демпфер по формуле dOmega/s.
+    private static final double GYRO_MAX_DELTA_OMEGA_PER_TICK = 0.5;
+    // ── Аварийная блокировка (emergency lockdown) ───────────────────────────
+    // Порог скачка |angVelTilt| или |yawRate| ЗА ОДИН ТИК относительно
+    // предыдущего значения — независимо от абсолютной величины. Ловит именно
+    // РЕЗКОЕ приращение (внешняя прецессия/столкновение), которое обычный
+    // HARD BRAKE по абсолютному |angVel| видит только постфактум, когда
+    // скорость уже большая. В логах скачок был ~3.6 рад/с за тик.
+    private static final double GYRO_LOCKDOWN_JUMP_THRESHOLD = 1.0;
+    // Число тиков полного гашения после срабатывания — даёт системе время
+    // "остыть" вместо немедленного возврата к PID, который может снова
+    // резонировать с тем же возмущением на следующем тике.
+    private static final int GYRO_LOCKDOWN_TICKS = 20;
+    // Гироскопическая прецессия (feed-forward компенсация): при вращении
+    // корабля по курсу (yaw) вокруг ЕЩЁ не выровненной вертикали угловой
+    // момент по yaw через недиагональные члены тензора инерции перетекает в
+    // ось наклона пропорционально yawRate·tiltSin·(разница главных моментов
+    // инерции). Точный аналитический учёт требует полного тензора инерции
+    // (недоступен в API — только getInverseInertiaTensor), поэтому вместо
+    // расчёта эффекта заранее ослабляем restoring-часть и демпфер, когда
+    // |yawRate| велика — система физически неустойчива к резонансу между
+    // yaw-вращением и tilt-коррекцией именно в этом режиме (см. лог: скачок
+    // yawRate до -1.33 рад/с совпал с разгоном angVelTilt). Плавный порог
+    // без разрыва: множитель убывает от 1.0 (yaw медленный) до
+    // GYRO_MIN_GAIN_AT_HIGH_YAW (yaw быстрый).
+    private static final double GYRO_YAW_DESTAB_THRESHOLD = 1.0; // рад/с, откуда начинаем снижать усиление
+    private static final double GYRO_MIN_GAIN_AT_HIGH_YAW = 0.15;
 
     /**
      * Вызывается Sable каждый физический тик пока блок находится на sublevel.
@@ -572,6 +636,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      * для любого корабля без единого настраиваемого параметра.
      * Yaw (курс вокруг мировой вертикали) намеренно не ограничивается —
      * стабилизатор только выравнивает корабль горизонтально.
+     * Наклон описывается единой осью коррекции tiltAxis = cross(currentUp,
+     * worldUp) вместо двух раздельных каналов roll/pitch — устраняет борьбу
+     * контуров через недиагональный тензор инерции. Yaw явно вычитается из
+     * angVel проекцией на worldUp до расчёта ошибки/демпфера.
      */
     @Override
     public void sable$physicsTick(ServerSubLevel subLevel, RigidBodyHandle handle, double timeStep) {
@@ -585,138 +653,167 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
         Quaterniond orientation = new Quaterniond(subLevel.logicalPose().orientation());
 
-        // facing.getStepX/Y/Z — компоненты направления без зависимости от Vec3i/Vector3i
+        // facing.getStepX/Y/Z — компоненты направления без зависимости от Vec3i/Vector3i.
+        // localUp вычисляется как локальная ось, перпендикулярная facing (Y мировой
+        // системы блока в его собственных координатах) — жёстко привязана к
+        // ориентации блока в конструкции, а не к facing напрямую, поэтому корректно
+        // отслеживает произвольный крен/тангаж независимо от того, куда "смотрит" блок.
         Vector3d localForward = new Vector3d(facing.getStepX(), facing.getStepY(), facing.getStepZ()).normalize();
-        Vector3d worldForward = orientation.transform(new Vector3d(localForward));
+        Vector3d localUpRef = Math.abs(localForward.y) > 0.999
+                ? new Vector3d(0.0, 0.0, 1.0)
+                : new Vector3d(0.0, 1.0, 0.0);
+        Vector3d localUp = new Vector3d(localUpRef)
+                .sub(new Vector3d(localForward).mul(localUpRef.dot(localForward)))
+                .normalize();
+
         Vector3d worldUp = new Vector3d(0.0, 1.0, 0.0);
+        // currentUp — текущая ориентация "верха" корабля в мировых координатах,
+        // единственный вектор, необходимый для описания наклона (roll+pitch слиты
+        // в одну величину). Полностью аналогично cross(currentUp, worldUp) у
+        // референсной реализации.
+        Vector3d currentUp = orientation.transform(new Vector3d(localUp)).normalize();
 
-        // ── Текущий правый борт корабля ──────────────────────────────────────
-        // ВАЖНО: worldForward НЕ меняется при чистом вращении вокруг самой
-        // оси forward (roll) — поэтому cross(worldForward, worldUp) в принципе
-        // не может нести информацию о крене (был баг исходной реализации,
-        // из-за которого П-составляющая всегда давала rollError≈0).
-        // Правильный «текущий правый борт» — фиксированный в теле корабля
-        // вектор (перпендикулярный facing), провёрнутый ПОЛНОЙ ориентацией
-        // sublevel'а — он корректно отслеживает крен, т.к. учитывает все 3 оси.
-        Direction rightLocalDir = facing.getClockWise();
-        Vector3d localRight = new Vector3d(rightLocalDir.getStepX(), rightLocalDir.getStepY(), rightLocalDir.getStepZ());
-        Vector3d shipRight = orientation.transform(new Vector3d(localRight)); // всегда ⟂ worldForward по построению
+        // ── Единая ось и угол наклона ────────────────────────────────────────
+        // tiltAxis = cross(currentUp, worldUp): лежит строго в горизонтальной
+        // плоскости, направление которой автоматически задаёт, "куда" клонится
+        // корабль — крен и тангаж это просто разные направления ОДНОГО и того
+        // же вектора ошибки, а не два раздельных PID, которые могут тянуть
+        // систему в разные стороны через недиагональные члены тензора инерции.
+        Vector3d tiltAxis = new Vector3d(currentUp).cross(worldUp);
+        double tiltSin = tiltAxis.length();
+        double tiltCos = currentUp.dot(worldUp);
+        double tiltError = Math.atan2(tiltSin, tiltCos); // угол наклона от вертикали, радианы, [0, π]
 
-        // ── Желаемый (горизонтальный) правый борт ────────────────────────────
-        Vector3d fwdHoriz = new Vector3d(worldForward.x, 0.0, worldForward.z);
-        boolean nearVertical = fwdHoriz.lengthSquared() < GYRO_EPS;
-        Vector3d desiredRight;
-        Vector3d desiredForwardHoriz;
+        boolean nearVertical = tiltSin < GYRO_EPS; // currentUp почти совпадает/противоположен worldUp — ось не определена
         if (!nearVertical) {
-            fwdHoriz.normalize();
-            desiredRight = new Vector3d(fwdHoriz).cross(worldUp).normalize();
-            desiredForwardHoriz = fwdHoriz;
-            // Кэшируем последний валидный «горизонтальный» правый борт — он
-            // послужит резервной осью, если корабль уйдёт в вертикальный facing.
-            gyroLastValidWorldRight = new Vector3d(desiredRight);
-        } else {
-            // Facing почти вертикален: горизонт относительно forward не
-            // определён (гимбал-лок). Вместо полного отключения стабилизации
-            // берём последний валидный горизонтальный ориентир (или, если его
-            // ещё не было, текущий борт — тогда стабилизация держит текущий
-            // крен), спроецированный на плоскость, перпендикулярную forward.
-            Vector3d reference = gyroLastValidWorldRight != null
-                    ? new Vector3d(gyroLastValidWorldRight)
-                    : new Vector3d(shipRight);
-            Vector3d projected = new Vector3d(reference)
-                    .sub(new Vector3d(worldForward).mul(reference.dot(worldForward)));
-            desiredRight = projected.lengthSquared() < 1e-9 ? new Vector3d(shipRight) : projected.normalize();
-            // В гимбал-локе горизонтальный forward не определён — pitch-канал
-            // корректировать не по чему, оставляем предыдущее направление.
-            desiredForwardHoriz = null;
+            tiltAxis.mul(1.0 / tiltSin); // нормализуем: |cross|=sin(угол), безопасно делить (tiltSin >= GYRO_EPS)
         }
-
-        // Ось коррекции roll = cross(shipRight, desiredRight).
-        // ВАЖНО: используем atan2(sin, cos) вместо голого sin (=cross·forward).
-        // sin(угол) неоднозначен и НЕ монотонен за пределами ±90° — на угле
-        // крена, близком к 90°, sin выходит на плато у ±1 и производная по
-        // истинному углу падает почти до нуля, из-за чего П-член перестаёт
-        // толкать систему дальше, она "зависает" на 90°, а после срыва этой
-        // точки (внешним возмущением) знак ошибки относительно РЕАЛЬНОГО угла
-        // может стать обратным на участке 90°..180°, что и раскачивало
-        // систему в неконтролируемое вращение. atan2 даёт монотонную ошибку
-        // на всём диапазоне ±180°, что и требуется для корректного PID.
-        Vector3d rollCorrectionAxis = new Vector3d(shipRight).cross(desiredRight);
-        double rollSin = rollCorrectionAxis.dot(worldForward);
-        double rollCos = shipRight.dot(desiredRight);
-        double rollError = Math.atan2(rollSin, rollCos); // истинный угол крена, радианы, монотонный на ±π
 
         Vector3d angVel = handle.getAngularVelocity(new Vector3d());
-        double angVelRoll = angVel.dot(worldForward);
+        // Проекция angVel на worldUp — это компонента yaw (курс). Явно вычитаем
+        // её из angVel ДО вычисления angVelTilt, чтобы демпфер и предохранители
+        // ни при каких обстоятельствах не гасили и не воспринимали свободное
+        // вращение по курсу как "накренивание" — конструкция должна свободно
+        // поворачиваться вправо/влево без сопротивления стабилизатора.
+        double yawRate = angVel.dot(worldUp);
+        Vector3d angVelNoYaw = new Vector3d(angVel).sub(new Vector3d(worldUp).mul(yawRate));
+        double angVelTilt = nearVertical ? 0.0 : angVelNoYaw.dot(tiltAxis);
 
-        // ── PID по крену (П + И с anti-windup + Д) ──────────────────────────
-        gyroIntegralRoll += rollError * timeStep;
-        gyroIntegralRoll = Math.max(-GYRO_MAX_INTEGRAL, Math.min(GYRO_MAX_INTEGRAL, gyroIntegralRoll));
+        // ── Обнаружение аномального скачка → аварийная блокировка ──────────
+        // Сравниваем ТЕКУЩИЕ angVelTilt/yawRate с их значением на ПРОШЛОМ
+        // физтике этого же блока. Резкое приращение независимо от абсолютной
+        // величины — верный признак внешнего возмущения (гироскопическая
+        // прецессия, столкновение, стыковка с другим кораблём), которое
+        // обычный PID не спроектирован гасить корректно за один шаг.
+        if (gyroPrevValid) {
+            double jumpTilt = Math.abs(angVelTilt - gyroPrevAngVelTilt);
+            double jumpYaw = Math.abs(yawRate - gyroPrevYawRate);
+            if (jumpTilt > GYRO_LOCKDOWN_JUMP_THRESHOLD || jumpYaw > GYRO_LOCKDOWN_JUMP_THRESHOLD) {
+                gyroLockdownTicksLeft = GYRO_LOCKDOWN_TICKS;
+                final double jumpTiltLog = jumpTilt, jumpYawLog = jumpYaw;
+                gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
+                        "LOCKDOWN TRIGGERED: jumpTilt=%.3f jumpYaw=%.3f > порог=%.3f, блокировка на %d тиков",
+                        jumpTiltLog, jumpYawLog, GYRO_LOCKDOWN_JUMP_THRESHOLD, GYRO_LOCKDOWN_TICKS));
+            }
+        }
+        gyroPrevAngVelTilt = angVelTilt;
+        gyroPrevYawRate = yawRate;
+        gyroPrevValid = true;
 
-        double rollPTerm = rollError * GYRO_KP;
-        double rollITerm = gyroIntegralRoll * GYRO_KI;
-
-        // Восстанавливающая часть (П+И) — ограничена потолком, стабилизатор
-        // не может резко "рвануть" корабль к цели.
-        double rollRestoring = (rollPTerm + rollITerm) * timeStep;
-        rollRestoring = Math.max(-GYRO_MAX_RESTORING_DELTA_OMEGA, Math.min(GYRO_MAX_RESTORING_DELTA_OMEGA, rollRestoring));
-
-        // Демпфер (Д) считается ОТДЕЛЬНО от потолка restoring-члена: если
-        // |angVelRoll| велика, демпфер обязан быть способен погасить её
-        // полностью за тик, иначе на больших скоростях (после срыва на
-        // гимбал-плато или сильного внешнего удара) раскачка не гасится и
-        // корабль улетает в бесконтрольное вращение. Демпфер клипуется по
-        // модулю текущей angVel (не может перегасить в обратную сторону), но
-        // НЕ клипуется общим потолком GYRO_MAX_RESTORING_DELTA_OMEGA.
-        double rollDampingRaw = -angVelRoll * GYRO_KD;
-        double rollDampingClamped = Math.max(-Math.abs(angVelRoll), Math.min(Math.abs(angVelRoll), rollDampingRaw));
-        if (Math.abs(angVelRoll) > GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE) {
-            // Жёсткое торможение: полностью гасим angVel за этот тик,
-            // независимо от того, что насчитал КД-коэффициент.
-            rollDampingClamped = -angVelRoll;
+        if (gyroLockdownTicksLeft > 0) {
+            gyroLockdownTicksLeft--;
+            // Полное аварийное гашение: в отличие от штатного HARD BRAKE
+            // (который трогает только tiltAxis), здесь гасится ВСЯ angVel
+            // целиком, включая yaw — при зафиксированном скачке такой силы
+            // нельзя полагаться на то, что вращение по курсу всё ещё "просто
+            // управляемый поворот", оно уже часть неконтролируемой раскрутки.
+            // gyroIntegralTilt сбрасывается, чтобы после выхода из блокировки
+            // PID не рванул сразу на накопленную за время блокировки ошибку.
+            gyroIntegralTilt = 0.0;
+            gyroCacheTicksLeft = 0; // форсируем пересчёт s после блокировки — ориентация могла сильно измениться
+            if (angVel.lengthSquared() > GYRO_EPS * GYRO_EPS) {
+                MassData massDataLockdown = subLevel.getMassTracker();
+                if (massDataLockdown != null && !massDataLockdown.isInvalid()) {
+                    Vector3d angVelLocal = orientation.transformInverse(new Vector3d(angVel));
+                    Vector3d invIAngVel = new Vector3d();
+                    massDataLockdown.getInverseInertiaTensor().transform(angVelLocal, invIAngVel);
+                    double sFull = angVelLocal.dot(invIAngVel);
+                    if (Double.isFinite(sFull) && sFull > 1e-9) {
+                        double impulseScalar = -1.0 / sFull;
+                        Vector3d lockdownImpulse = new Vector3d(angVel).mul(impulseScalar);
+                        if (Double.isFinite(lockdownImpulse.x) && Double.isFinite(lockdownImpulse.y)
+                                && Double.isFinite(lockdownImpulse.z)) {
+                            handle.applyAngularImpulse(lockdownImpulse);
+                        }
+                    }
+                }
+            }
+            final int ticksLeftLog = gyroLockdownTicksLeft;
+            gyroDebugLog(() -> "LOCKDOWN active, ticksLeft=" + ticksLeftLog);
+            return; // обычный PID не выполняется, пока блокировка активна
         }
 
-        double rollDOmega = rollRestoring + rollDampingClamped;
+        // ── PID по единой оси наклона (П + И с anti-windup + Д) ─────────────
+        // yawGain: снижает усиление П/И/Д при быстром вращении по курсу —
+        // именно в этом режиме недиагональные члены тензора инерции создают
+        // гироскопическую прецессию yaw→tilt, которую иначе стабилизатор
+        // воспринимает как обычную ошибку наклона и резонансно раскачивает.
+        double yawGain = 1.0;
+        double absYawRate = Math.abs(yawRate);
+        if (absYawRate > GYRO_YAW_DESTAB_THRESHOLD) {
+            // Плавное убывание 1/x к GYRO_MIN_GAIN_AT_HIGH_YAW, без разрыва в
+            // точке порога (при absYawRate == threshold gain == 1.0).
+            double t = GYRO_YAW_DESTAB_THRESHOLD / absYawRate; // (0,1]
+            yawGain = GYRO_MIN_GAIN_AT_HIGH_YAW + (1.0 - GYRO_MIN_GAIN_AT_HIGH_YAW) * t;
+        }
 
-        // ── PID по тангажу (П + И с anti-windup + Д) ────────────────────────
-        // Ось коррекции pitch = cross(worldForward, desiredForwardHoriz);
-        // положительная составляющая вдоль shipRight поднимает/опускает нос
-        // независимо от текущего yaw корабля. В гимбал-локе (desiredForwardHoriz
-        // == null) канал pitch пропускается — корректировать не по чему.
-        double pitchDOmega = 0.0;
-        double pitchError = 0.0;
-        double angVelPitch = 0.0;
-        if (desiredForwardHoriz != null) {
-            // См. комментарий у roll: atan2 вместо голого sin, чтобы ошибка
-            // была монотонной на всём диапазоне ±180°, а не только до ±90°.
-            Vector3d pitchCorrectionAxis = new Vector3d(worldForward).cross(desiredForwardHoriz);
-            double pitchSin = pitchCorrectionAxis.dot(shipRight);
-            double pitchCos = worldForward.dot(desiredForwardHoriz);
-            pitchError = Math.atan2(pitchSin, pitchCos); // истинный угол тангажа, радианы
+        double tiltDOmega = 0.0;
+        if (!nearVertical) {
+            gyroIntegralTilt += tiltError * timeStep;
+            gyroIntegralTilt = Math.max(-GYRO_MAX_INTEGRAL, Math.min(GYRO_MAX_INTEGRAL, gyroIntegralTilt));
 
-            angVelPitch = angVel.dot(shipRight);
+            double tiltPTerm = tiltError * GYRO_KP * yawGain;
+            double tiltITerm = gyroIntegralTilt * GYRO_KI * yawGain;
 
-            gyroIntegralPitch += pitchError * timeStep;
-            gyroIntegralPitch = Math.max(-GYRO_MAX_INTEGRAL, Math.min(GYRO_MAX_INTEGRAL, gyroIntegralPitch));
+            // Восстанавливающая часть (П+И) — ограничена потолком, стабилизатор
+            // не может резко "рвануть" корабль к цели.
+            double tiltRestoring = (tiltPTerm + tiltITerm) * timeStep;
+            tiltRestoring = Math.max(-GYRO_MAX_RESTORING_DELTA_OMEGA, Math.min(GYRO_MAX_RESTORING_DELTA_OMEGA, tiltRestoring));
 
-            double pitchPTerm = pitchError * GYRO_KP;
-            double pitchITerm = gyroIntegralPitch * GYRO_KI;
-
-            double pitchRestoring = (pitchPTerm + pitchITerm) * timeStep;
-            pitchRestoring = Math.max(-GYRO_MAX_RESTORING_DELTA_OMEGA, Math.min(GYRO_MAX_RESTORING_DELTA_OMEGA, pitchRestoring));
-
-            // См. комментарий у roll-канала — демпфер не клипуется общим
-            // потолком, чтобы всегда успевать погасить накопленную angVel.
-            double pitchDampingRaw = -angVelPitch * GYRO_KD;
-            double pitchDampingClamped = Math.max(-Math.abs(angVelPitch), Math.min(Math.abs(angVelPitch), pitchDampingRaw));
-            if (Math.abs(angVelPitch) > GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE) {
-                pitchDampingClamped = -angVelPitch;
+            // Демпфер (Д) считается ОТДЕЛЬНО от потолка restoring-члена: если
+            // |angVelTilt| велика, демпфер обязан быть способен погасить её
+            // полностью за тик, иначе на больших скоростях (после сильного
+            // внешнего удара) раскачка не гасится и корабль улетает в
+            // бесконтрольное вращение. Демпфер клипуется по модулю текущей
+            // angVelTilt (не может перегасить в обратную сторону), но НЕ
+            // клипуется общим потолком GYRO_MAX_RESTORING_DELTA_OMEGA — это и
+            // есть "физически честная" clamping-формула демпфера. Демпфер НЕ
+            // ослабляется yawGain — гасить угловую скорость нужно всегда,
+            // ослаблять нужно только "толкающую" restoring-часть.
+            double tiltDampingRaw = -angVelTilt * GYRO_KD;
+            double tiltDampingClamped = Math.max(-Math.abs(angVelTilt), Math.min(Math.abs(angVelTilt), tiltDampingRaw));
+            if (Math.abs(angVelTilt) > GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE) {
+                // Жёсткое торможение: полностью гасим angVelTilt за этот тик,
+                // независимо от того, что насчитал КД-коэффициент.
+                tiltDampingClamped = -angVelTilt;
             }
 
-            pitchDOmega = pitchRestoring + pitchDampingClamped;
+            tiltDOmega = tiltRestoring + tiltDampingClamped;
+            // Rate-limit: даже физически честный dOmega/s может дать взрывной
+            // impulseScalar при малом s (корабль почти симметричен вдоль
+            // tiltAxis) или при резонансе с прецессией. Ограничиваем сам
+            // целевой прирост угловой скорости за тик безусловным потолком —
+            // это тот самый предохранитель, которого не хватало для остановки
+            // скачка -0.04 → -3.68 рад/с за один тик, зафиксированного в логах.
+            tiltDOmega = Math.max(-GYRO_MAX_DELTA_OMEGA_PER_TICK, Math.min(GYRO_MAX_DELTA_OMEGA_PER_TICK, tiltDOmega));
+        } else {
+            // currentUp почти коллинеарен worldUp (корабль либо ровно, либо
+            // перевёрнут вверх дном) — ось наклона не определена, интеграл не
+            // копим, чтобы не накапливать шум на неопределённом направлении.
+            gyroIntegralTilt = 0.0;
         }
 
-        if (Math.abs(rollDOmega) < 1e-12 && Math.abs(pitchDOmega) < 1e-12) return;
+        if (Math.abs(tiltDOmega) < 1e-12) return;
 
         // ── Перевод целевых dOmega в импульс через реальный тензор инерции ──
         MassData massData = subLevel.getMassTracker();
@@ -727,45 +824,23 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
         Vector3d totalImpulse = new Vector3d();
 
-        if (Math.abs(rollDOmega) >= 1e-12) {
-            Vector3d nLocal = orientation.transformInverse(new Vector3d(worldForward));
-            Vector3d invIn = new Vector3d();
-            massData.getInverseInertiaTensor().transform(nLocal, invIn);
-            double s = nLocal.dot(invIn); // = worldForward · (invInertiaTensor_world · worldForward)
+        if (Math.abs(tiltDOmega) >= 1e-12) {
+            double s = gyroGetEffectiveInverseInertia(orientation, tiltAxis, massData);
             // Порог отсечки поднят с 1e-12 до 1e-6: почти-сингулярный s (корабль
             // почти симметричен/тонок вдоль оси коррекции) давал impulseScalar
             // порядка 10^6 и выше даже при малом dOmega — именно так возникал
             // взрывной разгон angVel, зафиксированный в логах.
             if (Double.isFinite(s) && s > 1e-6) {
-                double impulseScalar = rollDOmega / s;
+                double impulseScalar = tiltDOmega / s;
                 if (Double.isFinite(impulseScalar)) {
-                    totalImpulse.add(new Vector3d(worldForward).mul(impulseScalar));
+                    totalImpulse.add(new Vector3d(tiltAxis).mul(impulseScalar));
                 } else {
-                    final double dOmegaLog = rollDOmega, sLog = s;
-                    gyroDebugLog(() -> "roll impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
+                    final double dOmegaLog = tiltDOmega, sLog = s;
+                    gyroDebugLog(() -> "tilt impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
                 }
             } else {
                 final double sLog = s;
-                gyroDebugLog(() -> "roll s недействителен: s=" + sLog);
-            }
-        }
-
-        if (Math.abs(pitchDOmega) >= 1e-12) {
-            Vector3d nLocal = orientation.transformInverse(new Vector3d(shipRight));
-            Vector3d invIn = new Vector3d();
-            massData.getInverseInertiaTensor().transform(nLocal, invIn);
-            double s = nLocal.dot(invIn); // = shipRight · (invInertiaTensor_world · shipRight)
-            if (Double.isFinite(s) && s > 1e-6) {
-                double impulseScalar = pitchDOmega / s;
-                if (Double.isFinite(impulseScalar)) {
-                    totalImpulse.add(new Vector3d(shipRight).mul(impulseScalar));
-                } else {
-                    final double dOmegaLog = pitchDOmega, sLog = s;
-                    gyroDebugLog(() -> "pitch impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
-                }
-            } else {
-                final double sLog = s;
-                gyroDebugLog(() -> "pitch s недействителен: s=" + sLog);
+                gyroDebugLog(() -> "tilt s недействителен: s=" + sLog);
             }
         }
 
@@ -820,36 +895,19 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                     "HARD BRAKE: |angVel|=%.2f > потолок=%.2f, покомпонентное гашение по осям roll/pitch",
                     currentMagLog, GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE));
             // Полный прямой тензор инерции в API недоступен (подтверждён только
-            // getInverseInertiaTensor), поэтому гасим angVel тем же приёмом
-            // dOmega/s, что и штатный демпфер, но по ОБЕИМ осям (worldForward и
-            // shipRight) сразу и без потолка на dOmega — это резкий, но
-            // единственный физически согласованный способ погасить взрыв без
-            // прямого тензора. Компонента вдоль worldUp/yaw намеренно не
-            // трогается (стабилизатор не управляет курсом).
+            // getInverseInertiaTensor), поэтому гасим angVelNoYaw тем же приёмом
+            // dOmega/s, что и штатный демпфер, по ЕДИНОЙ оси наклона (tiltAxis,
+            // если определена) — это резкий, но единственный физически
+            // согласованный способ погасить взрыв без прямого тензора.
+            // Компонента вдоль worldUp/yaw намеренно не трогается (стабилизатор
+            // не управляет курсом, конструкция должна свободно поворачиваться).
             Vector3d brakeImpulse = new Vector3d();
-            double angVelRollNow = angVel.dot(worldForward);
-            if (Math.abs(angVelRollNow) > GYRO_EPS) {
-                Vector3d nLocal = orientation.transformInverse(new Vector3d(worldForward));
-                Vector3d invIn = new Vector3d();
-                massData.getInverseInertiaTensor().transform(nLocal, invIn);
-                double s = nLocal.dot(invIn);
+            if (!nearVertical && Math.abs(angVelTilt) > GYRO_EPS) {
+                double s = gyroGetEffectiveInverseInertia(orientation, tiltAxis, massData);
                 if (Double.isFinite(s) && s > 1e-6) {
-                    double impulseScalar = -angVelRollNow / s;
+                    double impulseScalar = -angVelTilt / s;
                     if (Double.isFinite(impulseScalar)) {
-                        brakeImpulse.add(new Vector3d(worldForward).mul(impulseScalar));
-                    }
-                }
-            }
-            double angVelPitchNow = angVel.dot(shipRight);
-            if (Math.abs(angVelPitchNow) > GYRO_EPS) {
-                Vector3d nLocal = orientation.transformInverse(new Vector3d(shipRight));
-                Vector3d invIn = new Vector3d();
-                massData.getInverseInertiaTensor().transform(nLocal, invIn);
-                double s = nLocal.dot(invIn);
-                if (Double.isFinite(s) && s > 1e-6) {
-                    double impulseScalar = -angVelPitchNow / s;
-                    if (Double.isFinite(impulseScalar)) {
-                        brakeImpulse.add(new Vector3d(shipRight).mul(impulseScalar));
+                        brakeImpulse.add(new Vector3d(tiltAxis).mul(impulseScalar));
                     }
                 }
             }
@@ -857,8 +915,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                     && brakeImpulse.lengthSquared() > 1e-24) {
                 handle.applyAngularImpulse(brakeImpulse);
             }
-            gyroIntegralRoll = 0.0;
-            gyroIntegralPitch = 0.0;
+            gyroIntegralTilt = 0.0;
             return;
         }
         if (predictedMag > allowedMag && predictedMag > 1e-9) {
@@ -871,15 +928,46 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         }
         if (totalImpulse.lengthSquared() < 1e-24) return;
 
-        final double rollErrorLog = rollError, angVelRollLog = angVelRoll, rollDOmegaLog = rollDOmega;
-        final double pitchErrorLog = pitchError, angVelPitchLog = angVelPitch, pitchDOmegaLog = pitchDOmega;
+        final double tiltErrorLog = tiltError, angVelTiltLog = angVelTilt, tiltDOmegaLog = tiltDOmega;
+        final double yawRateLog = yawRate;
         final boolean nearVerticalLog = nearVertical;
         gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
-                "roll=%.4f angVelRoll=%.4f dOmegaRoll=%.5f pitch=%.4f angVelPitch=%.4f dOmegaPitch=%.5f mass=%.2f nearVertical=%b",
-                rollErrorLog, angVelRollLog, rollDOmegaLog, pitchErrorLog, angVelPitchLog, pitchDOmegaLog,
+                "tilt=%.4f angVelTilt=%.4f dOmegaTilt=%.5f yawRate(untouched)=%.4f mass=%.2f nearVertical=%b",
+                tiltErrorLog, angVelTiltLog, tiltDOmegaLog, yawRateLog,
                 massData.getMass(), nearVerticalLog));
 
         handle.applyAngularImpulse(totalImpulse);
+    }
+
+    /**
+     * Эффективная обратная инерция вдоль оси axis (мировые координаты),
+     * s = axis·(invInertiaTensor_world·axis), с кэшированием между тиками.
+     * Оптимизация: matrix-transform + dot — самая тяжёлая операция на
+     * физтик стабилизатора, вызываемая до 2 раз (PID + возможный HARD BRAKE).
+     * axis (tiltAxis) при штатной работе меняется плавно, поэтому кэш
+     * переиспользуется, пока направление оси не отклонилось больше
+     * GYRO_CACHE_AXIS_COS_THRESHOLD и не истёк принудительный лимит
+     * GYRO_CACHE_MAX_TICKS (страхует от накопления ошибки на очень медленном,
+     * но неограниченно долгом дрейфе оси, а также от устаревания кэша при
+     * изменении массы/формы корабля, которое само по себе не двигает axis).
+     */
+    private double gyroGetEffectiveInverseInertia(Quaterniond orientation, Vector3d axis, MassData massData) {
+        boolean cacheValid = gyroCachedAxis != null
+                && gyroCacheTicksLeft > 0
+                && !Double.isNaN(gyroCachedS)
+                && gyroCachedAxis.dot(axis) >= GYRO_CACHE_AXIS_COS_THRESHOLD;
+        if (cacheValid) {
+            gyroCacheTicksLeft--;
+            return gyroCachedS;
+        }
+        Vector3d nLocal = orientation.transformInverse(new Vector3d(axis));
+        Vector3d invIn = new Vector3d();
+        massData.getInverseInertiaTensor().transform(nLocal, invIn);
+        double s = nLocal.dot(invIn);
+        gyroCachedAxis = new Vector3d(axis);
+        gyroCachedS = s;
+        gyroCacheTicksLeft = GYRO_CACHE_MAX_TICKS;
+        return s;
     }
 
     /**
