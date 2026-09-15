@@ -30,12 +30,13 @@ public class MachineSoulVisionScreen extends BaseMachineSoulScreen<MachineSoulVi
     }
     private void button(GuiGraphics g,int x,int y,int id,String text,int mx,int my){boolean h=mx>=x&&mx<x+64&&my>=y&&my<y+22;g.fill(x,y,x+64,y+22,h||selected==id?COL_SAVE_HOVER_BG:COL_SAVE_BG);drawBorder(g,x,y,64,22,h||selected==id?COL_ACCENT2:COL_SAVE_BORDER);g.drawCenteredString(font,text,x+32,y+7,h||selected==id?COL_ACCENT2:COL_TEXT);if(h)g.renderTooltip(font,Component.literal(text+" setting"),mx,my);}
     @Override public boolean mouseClicked(double x,double y,int b){
+        boolean handled=super.mouseClicked(x,y,b);
         if(b==0){
-            if(x>=leftPos+220&&x<leftPos+278&&y>=topPos+40&&y<topPos+57){selected=0;radius.setFocused(true);radius.setCursorPosition(radius.getValue().length());return true;}
-            if(x>=leftPos+220&&x<leftPos+278&&y>=topPos+76&&y<topPos+93){selected=1;keep.setFocused(true);keep.setCursorPosition(keep.getValue().length());return true;}
-            if(x>=leftPos+220&&x<leftPos+278&&y>=topPos+112&&y<topPos+129){selected=2;still.setFocused(true);still.setCursorPosition(still.getValue().length());return true;}
+            if(x>=leftPos+220&&x<leftPos+278&&y>=topPos+40&&y<topPos+57)selected=0;
+            else if(x>=leftPos+220&&x<leftPos+278&&y>=topPos+76&&y<topPos+93)selected=1;
+            else if(x>=leftPos+220&&x<leftPos+278&&y>=topPos+112&&y<topPos+129)selected=2;
         }
-        return super.mouseClicked(x,y,b);
+        return handled;
     }
     private boolean hit(double x,double y,int bx,int by){return x>=leftPos+bx&&x<leftPos+bx+64&&y>=topPos+by&&y<topPos+by+22;}
     private int val(EditBox b,int lo,int hi,int fallback){try{return Math.max(lo,Math.min(hi,Integer.parseInt(b.getValue())));}catch(Exception e){return fallback;}}
