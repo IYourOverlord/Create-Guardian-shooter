@@ -529,19 +529,36 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     private static final double GYRO_KI = 0.8;   // И-составляющая (компенсация постоянного возмущающего момента)
     private static final double GYRO_KD = 3.5;   // Д-составляющая (гашение угловой скорости по оси коррекции)
     // Anti-windup: жёсткий потолок накопителя интеграла (общий для roll/pitch).
-    private static final double GYRO_MAX_INTEGRAL = 0.5;
+    // Поднят с 0.5 до 4.0: при статическом контакте корабля с поверхностью
+    // (например, корабль осел и упирается носом/углом в землю) реактивный
+    // момент опоры полностью гасит любой недостаточно большой восстанавливающий
+    // импульс — гироскоп застревал в устойчивом ложном равновесии (см. логи:
+    // pitch зависал на -0.4635 десятки секунд). Интеграл должен иметь запас,
+    // чтобы "продавить" такое статическое сопротивление, как integral
+    // windup/breakaway в классических ПИД-регуляторах приводов.
+    private static final double GYRO_MAX_INTEGRAL = 4.0;
     // Физический предохранитель на ВОССТАНАВЛИВАЮЩУЮ (П+И) часть импульса —
     // ограничивает только "толкающую к цели" составляющую, чтобы стабилизатор
     // не мог разово вкачать в корабль нефизично большой момент. Демпфер (Д)
     // в этот потолок НЕ упирается (см. ниже) — иначе система может разогнать
     // angVel выше того, что демпфер способен погасить за тик, что и вызывало
     // срыв в раскрутку на больших углах/скоростях.
-    private static final double GYRO_MAX_RESTORING_DELTA_OMEGA = 0.5;
+    // Поднят с 0.5 до 4.0 по той же причине, что и GYRO_MAX_INTEGRAL — иначе
+    // restoring-часть режется раньше, чем накопленный интеграл успевает
+    // пробить статическую реакцию опоры. Защита от нефизичного разгона теперь
+    // обеспечивается отдельным предохранителем по итоговой |angVel| ниже (см.
+    // "Абсолютный предохранитель от взрыва"), а не этим потолком.
+    private static final double GYRO_MAX_RESTORING_DELTA_OMEGA = 4.0;
     // Жёсткий предохранитель по самой угловой скорости вдоль оси коррекции:
     // если |angVel| превышает этот порог, демпфер обязан погасить её
     // ПОЛНОСТЬЮ за один тик (не клипуется потолком выше), чтобы разгон
     // никогда не мог обогнать способность стабилизатора его гасить.
-    private static final double GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE = 3.0;
+    // Согласован с поднятым GYRO_MAX_RESTORING_DELTA_OMEGA (4.0): порог должен
+    // быть не меньше него, иначе абсолютный предохранитель по итоговой angVel
+    // (см. ниже, allowedMag = max(этот_порог, currentMag)) сам обрежет именно
+    // тот восстанавливающий импульс, который нужен для продавливания
+    // статического контакта с поверхностью.
+    private static final double GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE = 5.0;
     private static final double GYRO_EPS = 1e-6;
 
     /**
@@ -715,7 +732,11 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             Vector3d invIn = new Vector3d();
             massData.getInverseInertiaTensor().transform(nLocal, invIn);
             double s = nLocal.dot(invIn); // = worldForward · (invInertiaTensor_world · worldForward)
-            if (Double.isFinite(s) && s > 1e-12) {
+            // Порог отсечки поднят с 1e-12 до 1e-6: почти-сингулярный s (корабль
+            // почти симметричен/тонок вдоль оси коррекции) давал impulseScalar
+            // порядка 10^6 и выше даже при малом dOmega — именно так возникал
+            // взрывной разгон angVel, зафиксированный в логах.
+            if (Double.isFinite(s) && s > 1e-6) {
                 double impulseScalar = rollDOmega / s;
                 if (Double.isFinite(impulseScalar)) {
                     totalImpulse.add(new Vector3d(worldForward).mul(impulseScalar));
@@ -734,7 +755,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             Vector3d invIn = new Vector3d();
             massData.getInverseInertiaTensor().transform(nLocal, invIn);
             double s = nLocal.dot(invIn); // = shipRight · (invInertiaTensor_world · shipRight)
-            if (Double.isFinite(s) && s > 1e-12) {
+            if (Double.isFinite(s) && s > 1e-6) {
                 double impulseScalar = pitchDOmega / s;
                 if (Double.isFinite(impulseScalar)) {
                     totalImpulse.add(new Vector3d(shipRight).mul(impulseScalar));
@@ -750,6 +771,48 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
         if (!Double.isFinite(totalImpulse.x) || !Double.isFinite(totalImpulse.y) || !Double.isFinite(totalImpulse.z)) {
             return;
+        }
+        if (totalImpulse.lengthSquared() < 1e-24) return;
+
+        // ── Абсолютный предохранитель от взрыва ─────────────────────────────
+        // impulseScalar = dOmega / s физически корректен ТОЛЬКО если ось
+        // коррекции — собственный вектор тензора инерции. Для произвольной
+        // (roll/pitch) оси это лишь приближение: (a) при s→0 (корабль почти
+        // симметричен/тонок вдоль этой оси) impulseScalar взрывается даже при
+        // конечном dOmega; (b) сам импульс меняет angVel и по перпендикулярным
+        // осям (недиагональный invI), что на следующем тике даёт паразитную
+        // ошибку по ДРУГОЙ оси и рекурсивно наращивает импульс — именно так
+        // angVel улетела до ~10^4 рад/с в логах. Единственная надёжная защита —
+        // ограничить сам импульс так, чтобы результирующая angVel после его
+        // применения не могла превысить безопасный потолок ни по одной оси.
+        Vector3d predictedDeltaOmega = new Vector3d();
+        {
+            Vector3d impulseLocal = orientation.transformInverse(new Vector3d(totalImpulse));
+            Vector3d deltaOmegaLocal = new Vector3d();
+            massData.getInverseInertiaTensor().transform(impulseLocal, deltaOmegaLocal);
+            predictedDeltaOmega.set(orientation.transform(deltaOmegaLocal));
+        }
+        if (!Double.isFinite(predictedDeltaOmega.x) || !Double.isFinite(predictedDeltaOmega.y)
+                || !Double.isFinite(predictedDeltaOmega.z)) {
+            gyroDebugLog(() -> "predictedDeltaOmega недействителен, импульс отменён");
+            return;
+        }
+        Vector3d predictedAngVel = new Vector3d(angVel).add(predictedDeltaOmega);
+        double predictedMag = predictedAngVel.length();
+        // Абсолютный потолок результирующей |angVel| после коррекции. Любое
+        // штатное сближение к нулю укладывается в единицы рад/с; на порядки
+        // больший результат — верный признак численной/резонансной аномалии,
+        // и в этом случае импульс масштабируется вниз, а не отменяется вовсе,
+        // чтобы стабилизатор продолжал хоть немного гасить накопленную angVel.
+        double currentMag = angVel.length();
+        double allowedMag = Math.max(GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE, currentMag);
+        if (predictedMag > allowedMag && predictedMag > 1e-9) {
+            double scale = allowedMag / predictedMag;
+            totalImpulse.mul(scale);
+            final double predictedMagLog = predictedMag, allowedMagLog = allowedMag;
+            gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
+                    "impulse clamp: predicted|angVel|=%.2f > allowed=%.2f, scale=%.6f",
+                    predictedMagLog, allowedMagLog, scale));
         }
         if (totalImpulse.lengthSquared() < 1e-24) return;
 
