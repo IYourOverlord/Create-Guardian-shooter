@@ -799,13 +799,68 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         }
         Vector3d predictedAngVel = new Vector3d(angVel).add(predictedDeltaOmega);
         double predictedMag = predictedAngVel.length();
-        // Абсолютный потолок результирующей |angVel| после коррекции. Любое
-        // штатное сближение к нулю укладывается в единицы рад/с; на порядки
-        // больший результат — верный признак численной/резонансной аномалии,
-        // и в этом случае импульс масштабируется вниз, а не отменяется вовсе,
-        // чтобы стабилизатор продолжал хоть немного гасить накопленную angVel.
         double currentMag = angVel.length();
-        double allowedMag = Math.max(GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE, currentMag);
+        // Абсолютный потолок результирующей |angVel| после коррекции — ФИКСИРОВАН
+        // на GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE, а не относительно currentMag.
+        // БАГ прежней версии: allowedMag = max(порог, currentMag) растягивался
+        // вместе с currentMag при уже начавшемся резонансном разгоне (крен/тангаж
+        // связаны через недиагональные члены тензора инерции — импульс по roll
+        // паразитно меняет angVel по pitch и наоборот, что на следующем тике
+        // читается как новая ошибка и импульс снова растёт). В результате
+        // "предохранитель" сам себя отключал по мере роста angVel, что и
+        // приводило к взрыву до ~10^4-10^5 рад/с, зафиксированному в логах.
+        double allowedMag = GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE;
+        // Если ТЕКУЩАЯ angVel уже превышает потолок (внешний удар, резонанс с
+        // прошлого тика и т.п.) — импульс обязан быть направлен строго на
+        // погашение uже накопленной angVel, а не масштабированной "версией себя".
+        // Иначе scale-вниз всё равно может оставить резонансную связку нетронутой.
+        if (currentMag > GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE) {
+            final double currentMagLog = currentMag;
+            gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
+                    "HARD BRAKE: |angVel|=%.2f > потолок=%.2f, покомпонентное гашение по осям roll/pitch",
+                    currentMagLog, GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE));
+            // Полный прямой тензор инерции в API недоступен (подтверждён только
+            // getInverseInertiaTensor), поэтому гасим angVel тем же приёмом
+            // dOmega/s, что и штатный демпфер, но по ОБЕИМ осям (worldForward и
+            // shipRight) сразу и без потолка на dOmega — это резкий, но
+            // единственный физически согласованный способ погасить взрыв без
+            // прямого тензора. Компонента вдоль worldUp/yaw намеренно не
+            // трогается (стабилизатор не управляет курсом).
+            Vector3d brakeImpulse = new Vector3d();
+            double angVelRollNow = angVel.dot(worldForward);
+            if (Math.abs(angVelRollNow) > GYRO_EPS) {
+                Vector3d nLocal = orientation.transformInverse(new Vector3d(worldForward));
+                Vector3d invIn = new Vector3d();
+                massData.getInverseInertiaTensor().transform(nLocal, invIn);
+                double s = nLocal.dot(invIn);
+                if (Double.isFinite(s) && s > 1e-6) {
+                    double impulseScalar = -angVelRollNow / s;
+                    if (Double.isFinite(impulseScalar)) {
+                        brakeImpulse.add(new Vector3d(worldForward).mul(impulseScalar));
+                    }
+                }
+            }
+            double angVelPitchNow = angVel.dot(shipRight);
+            if (Math.abs(angVelPitchNow) > GYRO_EPS) {
+                Vector3d nLocal = orientation.transformInverse(new Vector3d(shipRight));
+                Vector3d invIn = new Vector3d();
+                massData.getInverseInertiaTensor().transform(nLocal, invIn);
+                double s = nLocal.dot(invIn);
+                if (Double.isFinite(s) && s > 1e-6) {
+                    double impulseScalar = -angVelPitchNow / s;
+                    if (Double.isFinite(impulseScalar)) {
+                        brakeImpulse.add(new Vector3d(shipRight).mul(impulseScalar));
+                    }
+                }
+            }
+            if (Double.isFinite(brakeImpulse.x) && Double.isFinite(brakeImpulse.y) && Double.isFinite(brakeImpulse.z)
+                    && brakeImpulse.lengthSquared() > 1e-24) {
+                handle.applyAngularImpulse(brakeImpulse);
+            }
+            gyroIntegralRoll = 0.0;
+            gyroIntegralPitch = 0.0;
+            return;
+        }
         if (predictedMag > allowedMag && predictedMag > 1e-9) {
             double scale = allowedMag / predictedMag;
             totalImpulse.mul(scale);
