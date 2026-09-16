@@ -207,6 +207,15 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      */
     private boolean gyroStabilizationActive = true;
 
+    /**
+     * Флаг блокировки редактирования блока («The NPC»).
+     * Пока true — все пакеты, изменяющие состояние этого конкретного блока,
+     * отклоняются для игроков не в GameType.CREATIVE.
+     * Игроки в Creative имеют полный доступ, включая переключение флага обратно.
+     * По умолчанию false (не заблокирован).
+     */
+    private boolean creativeLocked = false;
+
     // Рантайм-состояние PID стабилизатора (не сохраняется в NBT — накопитель
     // и резервная ось безопасно сбрасываются при перезагрузке чанка/сервера).
     private double gyroIntegralTilt = 0.0;
@@ -415,6 +424,17 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         this.gyroStabilizationActive = active;
         setChanged();
         LOGGER.info("[MachineSoul] setGyroStabilizationActive pos={} -> {}", worldPosition, active);
+        if (level != null && !level.isClientSide) {
+            level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+        }
+    }
+
+    public boolean isCreativeLocked() { return creativeLocked; }
+
+    public void setCreativeLocked(boolean locked) {
+        this.creativeLocked = locked;
+        setChanged();
+        LOGGER.info("[MachineSoul] setCreativeLocked pos={} -> {}", worldPosition, locked);
         if (level != null && !level.isClientSide) {
             level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
         }
@@ -1767,6 +1787,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putBoolean("RequireSubLevel", requireSubLevel);
         // Стабилизация сохраняется как есть — настройка поведения, а не активности.
         tag.putBoolean("GyroStabilization", gyroStabilizationActive);
+        tag.putBoolean("CreativeLocked", creativeLocked);
         // Таргетинг игроков сохраняется как есть (не форсируется).
         tag.putBoolean("TargetPlayers", targetPlayers);
         // Фильтр игроков (вайтлист).
@@ -1825,6 +1846,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putBoolean("SearchActive", targetSearchActive);
         tag.putBoolean("RequireSubLevel", requireSubLevel);
         tag.putBoolean("GyroStabilization", gyroStabilizationActive);
+        tag.putBoolean("CreativeLocked", creativeLocked);
         tag.putBoolean("TargetPlayers", targetPlayers);
         {
             CompoundTag pf = new CompoundTag();
@@ -1864,6 +1886,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             targetSearchActive = !tag.contains("SearchActive") || tag.getBoolean("SearchActive");
             requireSubLevel = tag.contains("RequireSubLevel") && tag.getBoolean("RequireSubLevel");
             gyroStabilizationActive = !tag.contains("GyroStabilization") || tag.getBoolean("GyroStabilization");
+            creativeLocked = tag.contains("CreativeLocked") && tag.getBoolean("CreativeLocked");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = tag.getCompound("PlayerFilter");
@@ -1898,6 +1921,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             targetSearchActive = !schematicBackup.contains("SearchActive") || schematicBackup.getBoolean("SearchActive");
             requireSubLevel = schematicBackup.contains("RequireSubLevel") && schematicBackup.getBoolean("RequireSubLevel");
             gyroStabilizationActive = !schematicBackup.contains("GyroStabilization") || schematicBackup.getBoolean("GyroStabilization");
+            creativeLocked = schematicBackup.contains("CreativeLocked") && schematicBackup.getBoolean("CreativeLocked");
             targetPlayers = !schematicBackup.contains("TargetPlayers") || schematicBackup.getBoolean("TargetPlayers");
             if (schematicBackup.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = schematicBackup.getCompound("PlayerFilter");
@@ -1939,6 +1963,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // синхронизируется отдельно, через OpenMachineSoulHomePacket.
         tag.putBoolean("SearchActive", true);
         tag.putBoolean("RequireSubLevel", requireSubLevel);
+        tag.putBoolean("CreativeLocked", creativeLocked);
         tag.putBoolean("TargetPlayers", targetPlayers);
         {
             CompoundTag pf = new CompoundTag();
@@ -2004,6 +2029,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             targetSearchActive = !tag.contains("SearchActive") || tag.getBoolean("SearchActive");
             requireSubLevel = tag.contains("RequireSubLevel") && tag.getBoolean("RequireSubLevel");
             gyroStabilizationActive = !tag.contains("GyroStabilization") || tag.getBoolean("GyroStabilization");
+            creativeLocked = tag.contains("CreativeLocked") && tag.getBoolean("CreativeLocked");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = tag.getCompound("PlayerFilter");

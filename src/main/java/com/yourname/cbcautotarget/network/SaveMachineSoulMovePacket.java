@@ -54,6 +54,7 @@ public record SaveMachineSoulMovePacket(
             if (!(ctx.player() instanceof ServerPlayer sp)) return;
             BlockEntity be = SaveMachineSoulConfigPacket.findBE(sp, pkt.pos());
             if (!(be instanceof MachineSoulBlockEntity soul)) return;
+            if (SaveMachineSoulConfigPacket.isSoulLocked(soul, sp)) return;
             for (CommandRole role : MachineSoulMoveMenu.MOVE_ROLES) {
                 ItemStack[] pair = pkt.slots().get(role);
                 if (pair != null) soul.assignSlot(role, pair[0], pair[1]);

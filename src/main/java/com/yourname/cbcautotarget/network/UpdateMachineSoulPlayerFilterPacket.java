@@ -121,6 +121,10 @@ public record UpdateMachineSoulPlayerFilterPacket(
                 return;
             }
 
+            if (SaveMachineSoulConfigPacket.isSoulLocked(soul, sp)) {
+                LOGGER.warn("[UpdatePlayerFilter] Block is creativeLocked, player {} denied", sp.getGameProfile().getName());
+                return;
+            }
             var filter = soul.getPlayerFilterData();
             int maskBefore = filter.getMask();
             switch (packet.action()) {

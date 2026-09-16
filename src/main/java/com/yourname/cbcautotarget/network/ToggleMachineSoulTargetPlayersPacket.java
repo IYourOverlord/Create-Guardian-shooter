@@ -63,6 +63,10 @@ public record ToggleMachineSoulTargetPlayersPacket(BlockPos pos) implements Cust
                 return;
             }
 
+            if (SaveMachineSoulConfigPacket.isSoulLocked(soul, sp)) {
+                LOGGER.warn("[ToggleTargetPlayers] Block is creativeLocked, player {} denied", sp.getGameProfile().getName());
+                return;
+            }
             soul.setTargetPlayers(!soul.isTargetPlayers());
             LOGGER.info("[ToggleTargetPlayers] pos={} -> {}", packet.pos(), soul.isTargetPlayers());
         });

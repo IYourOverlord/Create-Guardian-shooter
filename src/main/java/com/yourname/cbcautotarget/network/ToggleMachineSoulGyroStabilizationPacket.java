@@ -59,6 +59,10 @@ public record ToggleMachineSoulGyroStabilizationPacket(BlockPos pos) implements 
                 return;
             }
 
+            if (SaveMachineSoulConfigPacket.isSoulLocked(soul, sp)) {
+                LOGGER.warn("[ToggleGyro] Block is creativeLocked, player {} denied", sp.getGameProfile().getName());
+                return;
+            }
             soul.setGyroStabilizationActive(!soul.isGyroStabilizationActive());
             LOGGER.info("[ToggleGyro] pos={} -> {}", packet.pos(), soul.isGyroStabilizationActive());
         });

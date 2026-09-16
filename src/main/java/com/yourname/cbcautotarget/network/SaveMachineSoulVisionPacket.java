@@ -34,6 +34,7 @@ public record SaveMachineSoulVisionPacket(BlockPos pos, int radius, int keepDist
             if (!(ctx.player() instanceof ServerPlayer sp)) return;
             BlockEntity be = SaveMachineSoulConfigPacket.findBE(sp, pkt.pos());
             if (!(be instanceof MachineSoulBlockEntity soul)) return;
+            if (SaveMachineSoulConfigPacket.isSoulLocked(soul, sp)) return;
             soul.setDetectionRadius(pkt.radius());
             soul.setKeepDistance(pkt.keepDistance());
             soul.setStandStillDistance(pkt.standStillDistance());

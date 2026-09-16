@@ -67,6 +67,10 @@ public record ToggleMachineSoulSubLevelOnlyPacket(BlockPos pos) implements Custo
                 return;
             }
 
+            if (SaveMachineSoulConfigPacket.isSoulLocked(soul, sp)) {
+                LOGGER.warn("[ToggleSubLevelOnly] Block is creativeLocked, player {} denied", sp.getGameProfile().getName());
+                return;
+            }
             soul.setRequireSubLevel(!soul.isRequireSubLevel());
             LOGGER.info("[ToggleSubLevelOnly] pos={} -> {}", packet.pos(), soul.isRequireSubLevel());
         });

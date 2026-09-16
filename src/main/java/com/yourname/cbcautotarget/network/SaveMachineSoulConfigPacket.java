@@ -12,6 +12,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 import org.slf4j.Logger;
@@ -82,6 +83,15 @@ public record SaveMachineSoulConfigPacket(
             soul.onPlayerSaved(sp);
             LOGGER.info("[SaveConfig] SAVED to {} radius={}", soul.getBlockPos(), packet.detectionRadius());
         });
+    }
+
+    /**
+     * Возвращает true если блок заблокирован ({@code creativeLocked=true})
+     * и игрок НЕ в Creative — в этом случае пакет должен быть отклонён (soft-fail).
+     */
+    static boolean isSoulLocked(MachineSoulBlockEntity soul, ServerPlayer sp) {
+        return soul.isCreativeLocked()
+                && sp.gameMode.getGameModeForPlayer() != GameType.CREATIVE;
     }
 
     static BlockEntity findBE(ServerPlayer sp, BlockPos pos) {

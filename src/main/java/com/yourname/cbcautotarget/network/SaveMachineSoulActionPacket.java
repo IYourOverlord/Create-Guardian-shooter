@@ -39,6 +39,7 @@ public record SaveMachineSoulActionPacket(BlockPos pos, ItemStack freq0, ItemSta
             if (!(ctx.player() instanceof ServerPlayer sp)) return;
             BlockEntity be = SaveMachineSoulConfigPacket.findBE(sp, pkt.pos());
             if (!(be instanceof MachineSoulBlockEntity soul)) return;
+            if (SaveMachineSoulConfigPacket.isSoulLocked(soul, sp)) return;
             soul.assignSlot(CommandRole.FIRE, pkt.freq0(), pkt.freq1());
             soul.onPlayerSaved(sp);
         });

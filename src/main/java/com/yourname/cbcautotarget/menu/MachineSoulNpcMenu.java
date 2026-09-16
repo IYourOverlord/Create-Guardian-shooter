@@ -20,6 +20,7 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
     public final MachineSoulBlockEntity blockEntity;
     public final BlockPos blockPos;
     private boolean gyroStabilizationActive;
+    private boolean creativeLocked;
 
     // ── Клиентский конструктор ────────────────────────────────────────────────
     public MachineSoulNpcMenu(int id, Inventory inv, RegistryFriendlyByteBuf buf) {
@@ -29,10 +30,14 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
     private static MachineSoulBlockEntity readDummy(RegistryFriendlyByteBuf buf) {
         BlockPos pos = buf.readBlockPos();
         boolean gyro = buf.readBoolean();
+        // creativeLocked добавлен в протокол позже — читаем только если байт есть
+        // (защита от рассинхрона клиент/сервер при частичном обновлении)
+        boolean locked = buf.isReadable() && buf.readBoolean();
         MachineSoulBlockEntity dummy = new MachineSoulBlockEntity(
                 ModBlockEntities.MACHINE_SOUL.get(), pos,
                 ModBlocks.MACHINE_SOUL.get().defaultBlockState());
         dummy.setGyroStabilizationActive(gyro);
+        dummy.setCreativeLocked(locked);
         return dummy;
     }
 
@@ -42,10 +47,14 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
         this.blockEntity = be;
         this.blockPos    = be.getBlockPos();
         this.gyroStabilizationActive = be.isGyroStabilizationActive();
+        this.creativeLocked = be.isCreativeLocked();
     }
 
     public boolean isGyroStabilizationActive() { return gyroStabilizationActive; }
     public void setGyroStabilizationActive(boolean active) { this.gyroStabilizationActive = active; }
+
+    public boolean isCreativeLocked() { return creativeLocked; }
+    public void setCreativeLocked(boolean locked) { this.creativeLocked = locked; }
 
     @Override public ItemStack quickMoveStack(Player p, int i) { return ItemStack.EMPTY; }
 

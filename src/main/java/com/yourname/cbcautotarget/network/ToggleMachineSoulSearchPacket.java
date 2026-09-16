@@ -63,6 +63,10 @@ public record ToggleMachineSoulSearchPacket(BlockPos pos) implements CustomPacke
                 return;
             }
 
+            if (SaveMachineSoulConfigPacket.isSoulLocked(soul, sp)) {
+                LOGGER.warn("[ToggleSearch] Block is creativeLocked, player {} denied", sp.getGameProfile().getName());
+                return;
+            }
             soul.setTargetSearchActive(!soul.isTargetSearchActive());
             LOGGER.info("[ToggleSearch] pos={} -> {}", packet.pos(), soul.isTargetSearchActive());
         });

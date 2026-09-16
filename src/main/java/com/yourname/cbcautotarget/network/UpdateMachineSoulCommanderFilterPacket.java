@@ -94,6 +94,10 @@ public record UpdateMachineSoulCommanderFilterPacket(
                 return;
             }
 
+            if (SaveMachineSoulConfigPacket.isSoulLocked(soul, sp)) {
+                LOGGER.warn("[UpdateCommanderFilter] Block is creativeLocked, player {} denied", sp.getGameProfile().getName());
+                return;
+            }
             var filter = soul.getCommanderFilterData();
             LOGGER.info("[UpdateCommanderFilter] pos={} BEFORE friendlyIds={}", packet.pos(), filter.getFriendlyIds());
             switch (packet.action()) {
