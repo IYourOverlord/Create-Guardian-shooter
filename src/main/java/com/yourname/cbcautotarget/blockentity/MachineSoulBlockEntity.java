@@ -301,6 +301,15 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     private boolean gyroDeadbandActive = false;
     private int gyroStuckTicks = 0;
     private int gyroUnstickCooldownLeft = 0;
+    // Slew-rate ограничение восстанавливающего (П+И) импульса: предыдущее
+    // применённое значение tiltRestoring нужно, чтобы за один тик оно не
+    // могло измениться больше чем на GYRO_RESTORING_SLEW_PER_TICK. Без этого
+    // при апериодическом (критически демпфированном) режиме restoring-часть
+    // всё равно способна резко "дёрнуть" систему рывком на переходе через
+    // deadband/nearVertical или при скачке filteredTiltError, сама создавая
+    // крен, который потом приходится гасить демпфером — что и проявлялось
+    // как раскачка. Сбрасывается в 0, когда restoring не выдаётся вообще.
+    private double gyroPrevRestoring = 0.0;
 
     // ── Кэш эффективной инерции вдоль оси наклона (оптимизация) ─────────────
     // n·invI·n дорого считать каждый физ-субтик (matrix transform + dot).
@@ -640,9 +649,16 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // либо наклонён (в любом сочетании крена/тангажа), либо нет. Это устраняет
     // "борьбу" двух контуров через недиагональные члены тензора инерции,
     // которая и была источником нестабильности/раскачки в старой реализации.
-    private static final double GYRO_KP = 6.0;   // П-составляющая (по углу наклона, атан2)
+    // Снижено с 6.0/3.5 до 2.3/4.2 (Вариант 1: критическое демпфирование) —
+    // при KP=6.0 и недостаточно доминирующем демпфере система была
+    // колебательной (недодемпфированной): восстанавливающий момент разгонял
+    // angVelTilt быстрее, чем демпфер успевал её погасить ДО прохождения
+    // вертикали, что вызывало перелёт (overshoot) на противоположный борт и
+    // циклическую раскачку. Отношение KD/KP теперь ~1.8 (было ~0.58) —
+    // система стремится к апериодическому режиму без перелёта через 0.
+    private static final double GYRO_KP = 1.4;   // П-составляющая (по углу наклона, атан2)
     private static final double GYRO_KI = 0.8;   // И-составляющая (компенсация постоянного возмущающего момента)
-    private static final double GYRO_KD = 3.5;   // Д-составляющая (гашение угловой скорости по оси коррекции наклона)
+    private static final double GYRO_KD = 4.2;   // Д-составляющая (гашение угловой скорости по оси коррекции наклона)
     // Anti-windup: жёсткий потолок накопителя интеграла (общий для roll/pitch).
     // Поднят с 0.5 до 4.0: при статическом контакте корабля с поверхностью
     // (например, корабль осел и упирается носом/углом в землю) реактивный
@@ -683,7 +699,42 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE и включить HARD BRAKE. Ограничиваем
     // прирост |angVelTilt|, который стабилизатор готов внести за один тик,
     // независимо от того, что насчитал PID/демпфер по формуле dOmega/s.
-    private static final double GYRO_MAX_DELTA_OMEGA_PER_TICK = 0.5;
+    // Снижено с 0.5 до 0.12 (Вариант 1), а затем сделано ПРОПОРЦИОНАЛЬНЫМ
+    // |tiltError| вместо фиксированного значения (см. computeMaxDeltaOmegaForTilt
+    // ниже) — фиксированный потолок 0.12 одновременно:
+    //  (а) был слишком резким для малых углов (доли градуса крена уже давали
+    //      скачок скорости 0.12 рад/с — воспринимается как "рывок"), и
+    //  (б) был слишком мал для больших углов/переворота (tilt≈2.05 рад
+    //      застревал НАВСЕГДА: dOmegaTilt=0.12 упирался в потолок и не мог
+    //      продавить сопротивление опоры/демпфера — см. логи, где корабль
+    //      вверх ногами держал tilt=2.05..2.07 сотни тиков подряд).
+    // GYRO_MIN_DELTA_OMEGA_PER_TICK — минимальный потолок при малом крене
+    // (плавное, почти незаметное парирование), GYRO_MAX_DELTA_OMEGA_PER_TICK
+    // — потолок при полном перевороте (tiltError → π), между ними — плавная
+    // линейная интерполяция по |tiltError|/π.
+    private static final double GYRO_MIN_DELTA_OMEGA_PER_TICK = 0.035;
+    private static final double GYRO_MAX_DELTA_OMEGA_PER_TICK = 0.35;
+    // Отдельный, более узкий slew-rate ТОЛЬКО на restoring-часть (П+И) —
+    // ограничивает не абсолютную величину, а её ПРИРАЩЕНИЕ между соседними
+    // тиками (см. gyroPrevRestoring), чтобы стабилизатор сам не мог вносить
+    // рывок при резком изменении filteredTiltError/deadband-состояния.
+    // Демпфер (Д) под этот лимит не подпадает — он обязан реагировать на
+    // угловую скорость немедленно (см. комментарий у tiltDamping).
+    private static final double GYRO_RESTORING_SLEW_PER_TICK = 0.06;
+
+    /**
+     * Адаптивный потолок |dOmegaTilt| за тик, пропорциональный величине
+     * ошибки наклона: малый крен парируется медленно и плавно, полный
+     * переворот (tiltError → π) — быстрее, чтобы не застревать навечно
+     * (см. комментарий у GYRO_MIN/MAX_DELTA_OMEGA_PER_TICK). Линейная
+     * интерполяция без разрыва производной не нужна — резкий рывок здесь
+     * не критичен, так как это ПОТОЛОК скорости изменения, а не сама
+     * скорость: skew ограничивается отдельно GYRO_RESTORING_SLEW_PER_TICK.
+     */
+    private static double computeMaxDeltaOmegaForTilt(double absTiltErrorRad) {
+        double t = Math.min(1.0, absTiltErrorRad / Math.PI);
+        return GYRO_MIN_DELTA_OMEGA_PER_TICK + (GYRO_MAX_DELTA_OMEGA_PER_TICK - GYRO_MIN_DELTA_OMEGA_PER_TICK) * t;
+    }
     // ── Аварийная блокировка (emergency lockdown) ───────────────────────────
     // Порог скачка |angVelTilt| или |yawRate| ЗА ОДИН ТИК относительно
     // предыдущего значения — независимо от абсолютной величины. Ловит именно
@@ -691,6 +742,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // HARD BRAKE по абсолютному |angVel| видит только постфактум, когда
     // скорость уже большая. В логах скачок был ~3.6 рад/с за тик.
     private static final double GYRO_LOCKDOWN_JUMP_THRESHOLD = 1.0;
+    // Во сколько раз расширяется GYRO_LOCKDOWN_JUMP_THRESHOLD при tiltError,
+    // приближающемся к π (полный переворот) — см. комментарий у места
+    // использования в блоке обнаружения аномального скачка.
+    private static final double GYRO_LOCKDOWN_JUMP_THRESHOLD_MULTIPLIER = 4.0;
     // Число тиков полного гашения после срабатывания — даёт системе время
     // "остыть" вместо немедленного возврата к PID, который может снова
     // резонировать с тем же возмущением на следующем тике.
@@ -723,8 +778,28 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // сбрасывается, как только tiltError снова начинает уменьшаться, поэтому
     // не создаёт отложенного взрыва при внезапном исчезновении препятствия).
     private static final int GYRO_STUCK_TICKS_THRESHOLD = 15; // ~0.75с при 20 тиков/сек — застревание считается подтверждённым
+    // Поднят с 0.02 до 0.26 рад (~15°): небольшая кочка/лёгкий крен держит
+    // tiltError в районе 0.05-0.10 рад — при старом пороге 0.02 это уже
+    // считалось "почти выровненным, но всё равно застреванием", запуская
+    // весь breakaway/UNSTICK каскад (включая угловой толчок) на конструкции,
+    // которая на самом деле стоит почти ровно. Именно так лёгкое касание
+    // кочки перерастало в "торнадо" — см. логи: tilt=0.08 стабильно держится
+    // 60 тиков (это НОРМАЛЬНО для мелкого шума подвески от кочки, а не
+    // признак контакта с опорой, который стоит "продавливать" усиленным
+    // импульсом), но старый порог всё равно запускал UNSTICK. При крене
+    // меньше ~15° никакого продавливания вообще не требуется — обычный
+    // PID+демпфер сам справляется, breakaway/UNSTICK нужны только для
+    // случаев реального застревания на большом угле (лежит на боку/вверх
+    // ногами).
+    private static final double GYRO_STUCK_MIN_TILT_ERROR = 0.26;
     private static final double GYRO_STUCK_ERROR_PROGRESS_EPS = 0.005; // рад — порог "заметного" уменьшения ошибки за тик
-    private static final double GYRO_STUCK_MAX_RESTORING_MULTIPLIER = 4.0; // во сколько раз может вырасти потолок при полном застревании
+    // Снижено с 4.0 до 2.0 (Вариант 1) — учетверение restoring-потолка при
+    // ложном срабатывании breakaway (например, в затяжном динамическом
+    // вираже, ошибочно принятом за статическое застревание) вызывало
+    // мгновенный резкий переворот при выходе конструкции из поворота.
+    // GYRO_STUCK_YAW_SUPPRESS_THRESHOLD уже отсекает часть таких случаев, но
+    // сам множитель также сделан менее агрессивным как вторая линия защиты.
+    private static final double GYRO_STUCK_MAX_RESTORING_MULTIPLIER = 2.0; // во сколько раз может вырасти потолок при полном застревании
     private static final int GYRO_STUCK_RAMP_TICKS = 40; // за сколько тиков множитель нарастает от 1.0 до максимума
     // Порог |yawRate|, начиная с которого "застревание" не считаем поводом
     // расширять restoring-потолок. Проблема из логов: при быстром вращении по
@@ -754,6 +829,17 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // (massData.getMass()), чтобы толчок был одинаково эффективен для лёгких
     // и тяжёлых конструкций, а не фиксированной величиной "на глаз".
     private static final double GYRO_UNSTICK_LINEAR_VELOCITY_KICK = 1.5; // м/с, желаемая вертикальная скорость сразу после толчка
+    // Целевой dOmegaTilt (рад/с), сообщаемый конструкции ВДОЛЬ tiltAxis (то
+    // есть в направлении УМЕНЬШЕНИЯ tiltError — то же соглашение о знаке,
+    // что и у tiltRestoring/tiltDamping) синхронно с вертикальным линейным
+    // толчком отрыва. Обычный PID-потолок (GYRO_MAX_DELTA_OMEGA_PER_TICK)
+    // сюда намеренно не применяется: тот рассчитан на постоянное действие
+    // тик за тиком без риска рывка, а здесь — разовый импульс именно в
+    // момент временного снятия контакта с опорой, когда обычная угловая
+    // скорость коррекции физически не успевает провернуть конструкцию за
+    // краткое окно невесомости (см. лог: 660 тиков подряд без прогресса по
+    // tilt, десяток чисто вертикальных UNSTICK-толчков без эффекта).
+    private static final double GYRO_UNSTICK_ANGULAR_KICK = 0.8;
 
     /**
      * Вызывается Sable каждый физический тик пока блок находится на sublevel.
@@ -789,6 +875,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                 gyroLockdownFreeStreakTicks = 0;
                 gyroLockdownTicksLeft = 0;
                 gyroIntegralTilt = 0.0;
+                gyroPrevRestoring = 0.0;
                 gyroStuckTicks = 0;
                 gyroUnstickCooldownLeft = 0;
                 gyroPrevValid = false;
@@ -914,7 +1001,19 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             // (см. разбор логов: tilt≈0 + yawRate≈0.99 → на след. тике
             // tilt скачет до 0.6-2.0 из-за прецессии, а не из-за самого yaw).
             double jumpYaw = Math.abs(yawRate - gyroPrevYawRate);
-            if (jumpTilt > GYRO_LOCKDOWN_JUMP_THRESHOLD) {
+            // Порог скачка масштабируется вверх при большом |tiltError|
+            // (до GYRO_LOCKDOWN_JUMP_THRESHOLD_MULTIPLIER раз при tilt≈π):
+            // именно в диапазоне "перевёрнут" (tilt>~1.5 рад) сам законный,
+            // желаемый рывок демпфера/restoring для самовыравнивания создаёт
+            // резкое приращение angVelTilt, неотличимое по величине от
+            // внешнего удара — фиксированный порог поэтому постоянно ложно
+            // срабатывал LOCKDOWN'ом именно в момент, когда стабилизатор
+            // наконец начинал реально продавливать переворот (см. логи:
+            // tilt=1.73→2.08→LOCKDOWN×4→аварийное отключение, корабль
+            // застревал вверх ногами на десятки секунд).
+            double jumpThreshold = GYRO_LOCKDOWN_JUMP_THRESHOLD
+                    * (1.0 + (GYRO_LOCKDOWN_JUMP_THRESHOLD_MULTIPLIER - 1.0) * Math.min(1.0, Math.abs(tiltError) / Math.PI));
+            if (jumpTilt > jumpThreshold) {
                 gyroLockdownTicksLeft = GYRO_LOCKDOWN_TICKS;
                 // ── Счётчик подряд идущих LOCKDOWN (детектор резонансного срыва) ──
                 // Если с прошлого LOCKDOWN не прошло GYRO_LOCKDOWN_STABLE_WINDOW_TICKS
@@ -995,7 +1094,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // бОльшим восстанавливающим импульсом, а не большей угловой скоростью
         // демпфера — поэтому не трогаем GYRO_MAX_DELTA_OMEGA_PER_TICK/KD).
         double absTiltError = Math.abs(tiltError);
-        if (gyroPrevTiltErrorValid && absTiltError > 0.02) { // ниже 0.02 рад (~1°) застревание неважно — почти выровнено
+        if (gyroPrevTiltErrorValid && absTiltError > GYRO_STUCK_MIN_TILT_ERROR) { // ниже этого порога застревание не считается — почти выровнено, дальнейшая "борьба" не нужна
             double progress = gyroPrevTiltError - absTiltError; // >0 если ошибка уменьшается
             if (progress < GYRO_STUCK_ERROR_PROGRESS_EPS) {
                 gyroStuckTicks++;
@@ -1049,9 +1148,43 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                 // конкретной конструкции.
                 double impulseMagnitude = massDataUnstick.getMass() * GYRO_UNSTICK_LINEAR_VELOCITY_KICK;
                 Vector3d unstickImpulse = new Vector3d(worldUp).mul(impulseMagnitude);
-                if (Double.isFinite(unstickImpulse.x) && Double.isFinite(unstickImpulse.y) && Double.isFinite(unstickImpulse.z)) {
-                    handle.applyLinearAndAngularImpulse(unstickImpulse, new Vector3d(0.0, 0.0, 0.0), true);
+
+                // Угловой довесок (Вариант 2, исправление после первой попытки):
+                // чисто вертикальный толчок лишь на краткий миг снимает
+                // статический контакт с опорой, но САМ ПО СЕБЕ не поворачивает
+                // конструкцию — угловая скорость коррекции (демпфированная до
+                // 0.15-0.35 рад/с/тик намеренно, чтобы не давать резкий рывок)
+                // недостаточна, чтобы довернуть корпус за это короткое окно
+                // невесомости, поэтому корабль падает обратно на тот же бок
+                // (см. логи: 660 тиков подряд stuckTicks, десяток UNSTICK'ов
+                // без какого-либо прогресса по tilt=2.05→2.03). Даём угловой
+                // импульс вокруг оси коррекции наклона ИМЕННО в момент отрыва
+                // от опоры, когда реактивный противомомент контакта временно
+                // отсутствует — только тогда угловой толчок способен реально
+                // провернуть конструкцию, а не быть погашенным опорой.
+                Vector3d unstickAngularImpulse = new Vector3d();
+                double sUnstick = gyroGetEffectiveInverseInertia(orientation, tiltAxis, massDataUnstick);
+                if (Double.isFinite(sUnstick) && sUnstick > 1e-6) {
+                    double impulseScalarUnstick = GYRO_UNSTICK_ANGULAR_KICK / sUnstick;
+                    if (Double.isFinite(impulseScalarUnstick)) {
+                        unstickAngularImpulse = new Vector3d(tiltAxis).mul(impulseScalarUnstick);
+                    }
+                }
+
+                if (Double.isFinite(unstickImpulse.x) && Double.isFinite(unstickImpulse.y) && Double.isFinite(unstickImpulse.z)
+                        && Double.isFinite(unstickAngularImpulse.x) && Double.isFinite(unstickAngularImpulse.y) && Double.isFinite(unstickAngularImpulse.z)) {
+                    handle.applyLinearAndAngularImpulse(unstickImpulse, unstickAngularImpulse, true);
                     gyroUnstickCooldownLeft = GYRO_UNSTICK_COOLDOWN_TICKS;
+                    // Синхронизируем "прошлое" значение angVelTilt для детектора
+                    // аномального скачка (LOCKDOWN) на ожидаемую величину ПОСЛЕ
+                    // применения импульса — иначе собственный контролируемый
+                    // угловой толчок UNSTICK на следующем тике читается как
+                    // jumpTilt≈GYRO_UNSTICK_ANGULAR_KICK и может (вместе с
+                    // остаточным вращением от предыдущих толчков) пробить
+                    // GYRO_LOCKDOWN_JUMP_THRESHOLD, аварийно блокируя
+                    // стабилизатор сразу после того, как он наконец сдвинул
+                    // конструкцию с мёртвой точки.
+                    gyroPrevAngVelTilt = angVelTilt + GYRO_UNSTICK_ANGULAR_KICK;
                     // Лог UNSTICK не троттлируется наравне с обычным диагностическим
                     // логом (используется LOGGER напрямую) — иначе событие могло
                     // "проглатываться" общим 1-секундным троттлингом gyroDebugLog,
@@ -1059,8 +1192,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                     // из-за чего в предыдущих логах UNSTICK не было видно вообще,
                     // хотя импульс применялся.
                     final int stuckTicksLog2 = gyroStuckTicks;
-                    LOGGER.info("[MachineSoul][gyro] pos={} UNSTICK: застревание {} тиков подряд, вертикальный толчок применён (impulse={})",
-                            worldPosition, stuckTicksLog2, String.format(java.util.Locale.ROOT, "%.2f", impulseMagnitude));
+                    final double angularKickLog = GYRO_UNSTICK_ANGULAR_KICK;
+                    LOGGER.info("[MachineSoul][gyro] pos={} UNSTICK: застревание {} тиков подряд, вертикальный+угловой толчок применён (impulse={}, angularKick={})",
+                            worldPosition, stuckTicksLog2, String.format(java.util.Locale.ROOT, "%.2f", impulseMagnitude),
+                            String.format(java.util.Locale.ROOT, "%.2f", angularKickLog));
                 }
             }
         }
@@ -1107,7 +1242,17 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             double effectiveRestoringCap = GYRO_MAX_RESTORING_DELTA_OMEGA * restoringMultiplier;
             tiltRestoring = (tiltPTerm + tiltITerm) * timeStep;
             tiltRestoring = Math.max(-effectiveRestoringCap, Math.min(effectiveRestoringCap, tiltRestoring));
-            tiltRestoring = Math.max(-GYRO_MAX_DELTA_OMEGA_PER_TICK, Math.min(GYRO_MAX_DELTA_OMEGA_PER_TICK, tiltRestoring));
+            double adaptiveMaxDeltaOmega = computeMaxDeltaOmegaForTilt(absTiltError);
+            tiltRestoring = Math.max(-adaptiveMaxDeltaOmega, Math.min(adaptiveMaxDeltaOmega, tiltRestoring));
+
+            // Slew-rate: приращение restoring-части относительно прошлого
+            // применённого тика не может превышать GYRO_RESTORING_SLEW_PER_TICK
+            // (Вариант 1) — не даёт стабилизатору самому создавать крен резким
+            // изменением restoring-импульса, например на входе/выходе из
+            // deadband или при скачке filteredTiltError.
+            double restoringDelta = tiltRestoring - gyroPrevRestoring;
+            restoringDelta = Math.max(-GYRO_RESTORING_SLEW_PER_TICK, Math.min(GYRO_RESTORING_SLEW_PER_TICK, restoringDelta));
+            tiltRestoring = gyroPrevRestoring + restoringDelta;
         } else {
             // Либо near-vertical, либо deadband активен (конструкция в
             // пределах допуска выровненности) — restoring не выдаётся вообще,
@@ -1115,6 +1260,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             // незначимом отклонении.
             gyroIntegralTilt = 0.0;
         }
+        gyroPrevRestoring = tiltRestoring;
         if (filteredNearVertical) {
             gyroStuckTicks = 0;
             gyroPrevTiltErrorValid = false;
