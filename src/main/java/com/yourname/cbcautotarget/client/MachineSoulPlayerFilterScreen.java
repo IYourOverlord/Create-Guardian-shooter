@@ -94,6 +94,14 @@ public class MachineSoulPlayerFilterScreen extends Screen {
     private static final int COL_ESC_TX    = 0xFF88CCAA;
     private static final int COL_ESC_TX_A  = 0xFFAAFFCC;
 
+    // Target (голубой)
+    private static final int COL_TGT_BG    = 0xFF081218;
+    private static final int COL_TGT_BG_H  = 0xFF102030;
+    private static final int COL_TGT_BR    = 0xFF2A6B90;
+    private static final int COL_TGT_BR_A  = 0xFF55BBEE;
+    private static final int COL_TGT_TX    = 0xFF88BBDD;
+    private static final int COL_TGT_TX_A  = 0xFFAAEEFF;
+
     // ── Состояние ─────────────────────────────────────────────────────────────
     private final Screen         parent;
     private final BlockPos       blockPos;
@@ -222,13 +230,13 @@ public class MachineSoulPlayerFilterScreen extends Screen {
     }
 
     /**
-     * Переключение режима. Кнопки взаимоисключающие:
-     * нажатие активной — сброс в TARGET; нажатие другой — сброс текущей и активация новой.
+     * Переключение режима. Кнопки взаимоисключающие: Target/Ignore/Escort.
+     * Клик по уже активной кнопке не меняет состояние.
      */
     private void onSetMode(WhitelistMode clicked) {
-        WhitelistMode next = (mode == clicked) ? WhitelistMode.TARGET : clicked;
-        this.mode = next;
-        PacketDistributor.sendToServer(UpdateMachineSoulPlayerFilterPacket.setMode(blockPos, next));
+        if (mode == clicked) return;
+        this.mode = clicked;
+        PacketDistributor.sendToServer(UpdateMachineSoulPlayerFilterPacket.setMode(blockPos, clicked));
     }
 
     private void onAdd() {
@@ -267,15 +275,17 @@ public class MachineSoulPlayerFilterScreen extends Screen {
     }
 
     private boolean handleModeBtnClick(double mx, double my) {
-        int btnY  = panelY + OFF_MODBTN;
-        int btnH  = 18;
-        int halfW = (PANEL_W - PAD * 2 - BTN_HALF_GAP) / 2;
-        int x1    = panelX + PAD;
-        int x2    = x1 + halfW + BTN_HALF_GAP;
+        int btnY   = panelY + OFF_MODBTN;
+        int btnH   = 18;
+        int thirdW = (PANEL_W - PAD * 2 - BTN_HALF_GAP * 2) / 3;
+        int x1     = panelX + PAD;
+        int x2     = x1 + thirdW + BTN_HALF_GAP;
+        int x3     = x2 + thirdW + BTN_HALF_GAP;
 
         if (my >= btnY && my < btnY + btnH) {
-            if (mx >= x1 && mx < x1 + halfW) { onSetMode(WhitelistMode.IGNORE); return true; }
-            if (mx >= x2 && mx < x2 + halfW) { onSetMode(WhitelistMode.FOLLOW); return true; }
+            if (mx >= x1 && mx < x1 + thirdW) { onSetMode(WhitelistMode.TARGET); return true; }
+            if (mx >= x2 && mx < x2 + thirdW) { onSetMode(WhitelistMode.IGNORE); return true; }
+            if (mx >= x3 && mx < x3 + thirdW) { onSetMode(WhitelistMode.FOLLOW); return true; }
         }
         return false;
     }
@@ -339,7 +349,7 @@ public class MachineSoulPlayerFilterScreen extends Screen {
         };
         int maxW = w - PAD * 2;
         if (font.width(raw) > maxW) raw = font.plainSubstrByWidth(raw, maxW - font.width("…")) + "…";
-        int hintCol = (mode == WhitelistMode.TARGET) ? COL_TEXT_DIM : COL_HINT_ON;
+        int hintCol = COL_HINT_ON;
         g.drawCenteredString(font, raw, x + w / 2, y + OFF_HINT + 1, hintCol);
 
         // Фон списка
@@ -351,39 +361,52 @@ public class MachineSoulPlayerFilterScreen extends Screen {
     }
 
     private void drawModeButtons(GuiGraphics g, int mx, int my) {
-        int btnY  = panelY + OFF_MODBTN;
-        int btnH  = 18;
-        int halfW = (PANEL_W - PAD * 2 - BTN_HALF_GAP) / 2;
-        int x1    = panelX + PAD;
-        int x2    = x1 + halfW + BTN_HALF_GAP;
+        int btnY   = panelY + OFF_MODBTN;
+        int btnH   = 18;
+        int thirdW = (PANEL_W - PAD * 2 - BTN_HALF_GAP * 2) / 3;
+        int x1     = panelX + PAD;
+        int x2     = x1 + thirdW + BTN_HALF_GAP;
+        int x3     = x2 + thirdW + BTN_HALF_GAP;
 
-        boolean hovIgn = mx >= x1 && mx < x1 + halfW && my >= btnY && my < btnY + btnH;
-        boolean hovEsc = mx >= x2 && mx < x2 + halfW && my >= btnY && my < btnY + btnH;
+        boolean hovTgt = mx >= x1 && mx < x1 + thirdW && my >= btnY && my < btnY + btnH;
+        boolean hovIgn = mx >= x2 && mx < x2 + thirdW && my >= btnY && my < btnY + btnH;
+        boolean hovEsc = mx >= x3 && mx < x3 + thirdW && my >= btnY && my < btnY + btnH;
+        boolean actTgt = (mode == WhitelistMode.TARGET);
         boolean actIgn = (mode == WhitelistMode.IGNORE);
         boolean actEsc = (mode == WhitelistMode.FOLLOW);
+
+        // — Target —
+        int bgT = (actTgt || hovTgt) ? COL_TGT_BG_H : COL_TGT_BG;
+        int brT = (actTgt || hovTgt) ? COL_TGT_BR_A  : COL_TGT_BR;
+        int txT = actTgt             ? COL_TGT_TX_A  : COL_TGT_TX;
+        g.fill(x1, btnY, x1 + thirdW, btnY + btnH, bgT);
+        border(g, x1, btnY, thirdW, btnH, brT);
+        if (actTgt) g.fill(x1 + 1, btnY + 1, x1 + 3, btnY + btnH - 1, COL_TGT_BR_A);
+        String lT = (actTgt ? "\u25CF " : "\u25CB ")
+                + Component.translatable("gui.cbc_autotarget.soul.player_filter.target").getString();
+        g.drawCenteredString(font, lT, x1 + thirdW / 2, btnY + (btnH - font.lineHeight) / 2, txT);
 
         // — Ignore —
         int bgI = (actIgn || hovIgn) ? COL_IGN_BG_H : COL_IGN_BG;
         int brI = (actIgn || hovIgn) ? COL_IGN_BR_A  : COL_IGN_BR;
         int txI = actIgn             ? COL_IGN_TX_A  : COL_IGN_TX;
-        g.fill(x1, btnY, x1 + halfW, btnY + btnH, bgI);
-        border(g, x1, btnY, halfW, btnH, brI);
-        // Левая полоска-индикатор активности
-        if (actIgn) g.fill(x1 + 1, btnY + 1, x1 + 3, btnY + btnH - 1, COL_IGN_BR_A);
+        g.fill(x2, btnY, x2 + thirdW, btnY + btnH, bgI);
+        border(g, x2, btnY, thirdW, btnH, brI);
+        if (actIgn) g.fill(x2 + 1, btnY + 1, x2 + 3, btnY + btnH - 1, COL_IGN_BR_A);
         String lI = (actIgn ? "\u25CF " : "\u25CB ")
                 + Component.translatable("gui.cbc_autotarget.soul.player_filter.ignore").getString();
-        g.drawCenteredString(font, lI, x1 + halfW / 2, btnY + (btnH - font.lineHeight) / 2, txI);
+        g.drawCenteredString(font, lI, x2 + thirdW / 2, btnY + (btnH - font.lineHeight) / 2, txI);
 
         // — Escort —
         int bgE = (actEsc || hovEsc) ? COL_ESC_BG_H : COL_ESC_BG;
         int brE = (actEsc || hovEsc) ? COL_ESC_BR_A  : COL_ESC_BR;
         int txE = actEsc             ? COL_ESC_TX_A  : COL_ESC_TX;
-        g.fill(x2, btnY, x2 + halfW, btnY + btnH, bgE);
-        border(g, x2, btnY, halfW, btnH, brE);
-        if (actEsc) g.fill(x2 + 1, btnY + 1, x2 + 3, btnY + btnH - 1, COL_ESC_BR_A);
+        g.fill(x3, btnY, x3 + thirdW, btnY + btnH, bgE);
+        border(g, x3, btnY, thirdW, btnH, brE);
+        if (actEsc) g.fill(x3 + 1, btnY + 1, x3 + 3, btnY + btnH - 1, COL_ESC_BR_A);
         String lE = (actEsc ? "\u25CF " : "\u25CB ")
                 + Component.translatable("gui.cbc_autotarget.soul.player_filter.follow").getString();
-        g.drawCenteredString(font, lE, x2 + halfW / 2, btnY + (btnH - font.lineHeight) / 2, txE);
+        g.drawCenteredString(font, lE, x3 + thirdW / 2, btnY + (btnH - font.lineHeight) / 2, txE);
     }
 
     private void hline(GuiGraphics g, int x, int y, int w) {
@@ -442,8 +465,8 @@ public class MachineSoulPlayerFilterScreen extends Screen {
             Entry(String n) {
                 this.name = n;
                 this.removeBtn = Button.builder(
-                        Component.translatable("gui.cbc_autotarget.whitelist.remove"),
-                        b -> onRemove(n))
+                                Component.translatable("gui.cbc_autotarget.whitelist.remove"),
+                                b -> onRemove(n))
                         .size(46, ITEM_H - 6).build();
             }
 

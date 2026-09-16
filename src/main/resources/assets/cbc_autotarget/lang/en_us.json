@@ -112,6 +112,7 @@
   "gui.cbc_autotarget.soul.commander_filter.hint": "IDs in this list are ignored. All other commanders are targeted.",
   "gui.cbc_autotarget.soul.commander_filter.input_hint": "Alliance Key...",
   "gui.cbc_autotarget.soul.player_filter.title": "Player Whitelist",
+  "gui.cbc_autotarget.soul.player_filter.target": "Target",
   "gui.cbc_autotarget.soul.player_filter.ignore": "Ignore",
   "gui.cbc_autotarget.soul.player_filter.follow": "Escort",
   "gui.cbc_autotarget.soul.player_filter.hint.target": "Attack only listed players",

@@ -112,6 +112,7 @@
   "gui.cbc_autotarget.soul.commander_filter.hint": "ID зі списку ігноруються. Усі інші командири — цілі.",
   "gui.cbc_autotarget.soul.commander_filter.input_hint": "ABCD",
   "gui.cbc_autotarget.soul.player_filter.title": "Білий список гравців",
+  "gui.cbc_autotarget.soul.player_filter.target": "Ціль",
   "gui.cbc_autotarget.soul.player_filter.ignore": "Ігнорувати",
   "gui.cbc_autotarget.soul.player_filter.follow": "Супроводжувати",
   "gui.cbc_autotarget.soul.player_filter.hint.target": "Атакувати лише перелічених гравців",

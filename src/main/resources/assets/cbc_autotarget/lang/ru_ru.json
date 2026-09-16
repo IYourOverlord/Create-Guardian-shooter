@@ -112,6 +112,7 @@
   "gui.cbc_autotarget.soul.commander_filter.hint": "ID из списка игнорируются. Все остальные командеры — цели.",
   "gui.cbc_autotarget.soul.commander_filter.input_hint": "Ключ альянса...",
   "gui.cbc_autotarget.soul.player_filter.title": "Белый список игроков",
+  "gui.cbc_autotarget.soul.player_filter.target": "Цель",
   "gui.cbc_autotarget.soul.player_filter.ignore": "Игнорировать",
   "gui.cbc_autotarget.soul.player_filter.follow": "Сопровождать",
   "gui.cbc_autotarget.soul.player_filter.hint.target": "Атаковать только перечисленных игроков",
