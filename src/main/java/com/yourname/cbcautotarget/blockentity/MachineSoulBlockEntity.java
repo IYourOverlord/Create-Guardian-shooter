@@ -818,8 +818,15 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // обычный PID не спроектирован гасить корректно за один шаг.
         if (gyroPrevValid) {
             double jumpTilt = Math.abs(angVelTilt - gyroPrevAngVelTilt);
+            // jumpYaw больше НЕ участвует в условии триггера: резкий разворот
+            // по курсу (пилот дёрнул штурвал) — штатное управляемое действие,
+            // а не признак резонанса/удара. Он уже корректно демпфируется
+            // отдельно через yawGain/GYRO_YAW_DESTAB_THRESHOLD в PID-ветке ниже.
+            // Реальная гироскопическая аномалия проявляется именно в jumpTilt
+            // (см. разбор логов: tilt≈0 + yawRate≈0.99 → на след. тике
+            // tilt скачет до 0.6-2.0 из-за прецессии, а не из-за самого yaw).
             double jumpYaw = Math.abs(yawRate - gyroPrevYawRate);
-            if (jumpTilt > GYRO_LOCKDOWN_JUMP_THRESHOLD || jumpYaw > GYRO_LOCKDOWN_JUMP_THRESHOLD) {
+            if (jumpTilt > GYRO_LOCKDOWN_JUMP_THRESHOLD) {
                 gyroLockdownTicksLeft = GYRO_LOCKDOWN_TICKS;
                 // ── Счётчик подряд идущих LOCKDOWN (детектор резонансного срыва) ──
                 // Если с прошлого LOCKDOWN не прошло GYRO_LOCKDOWN_STABLE_WINDOW_TICKS
