@@ -257,6 +257,48 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // ── Состояние breakaway (продавливание застревания) ─────────────────────
     private double gyroPrevTiltError = 0.0;
     private boolean gyroPrevTiltErrorValid = false;
+    // ── Фильтр дребезга подвески (low-pass на входе PID) ─────────────────────
+    // Мягкая подвеска колёс (Sable suspension joints) даёт конструкции
+    // постоянный высокочастотный микро-крен на месте (tilt колеблется в
+    // районе 0.01-0.05 рад тик от тика туда-обратно, само по себе безобидно).
+    // PID реагирует на КАЖДЫЙ такой всплеск как на реальное отклонение и
+    // выдаёт restoring-импульс — этот импульс добавляет энергию в систему
+    // пружина+корпус, подвеска отвечает бОльшим колебанием, PID снова толкает
+    // сильнее — положительная обратная связь по резонансной частоте
+    // подвески, визуально выглядящая как нарастающая раскачка вплоть до
+    // переворота. gyroFilteredTiltAxis/gyroFilteredTiltSin/gyroFilteredTiltCos
+    // хранят экспоненциально сглаженный (EMA) единичный вектор currentUp —
+    // фильтруется САМ вектор ориентации (а не скалярный угол), чтобы
+    // избежать сложения углов вокруг непараллельных осей на разных тиках.
+    // Это классический частотный разделитель: постоянная времени фильтра
+    // пропускает медленное реальное опрокидывание почти без задержки, но
+    // усредняет и гасит быстрые знакопеременные колебания дребезга подвески,
+    // не требуя знания конкретной частоты/жёсткости пружин — адаптивность
+    // достигается самой природой EMA (чем быстрее и чем более знакопеременны
+    // отклонения, тем сильнее они гасятся усреднением). Используется ТОЛЬКО
+    // для PID/deadband — сырой currentUp/tiltError по-прежнему идёт в
+    // LOCKDOWN/jumpTilt/nearVertical, чтобы не терять чувствительность к
+    // реальным резким ударам/столкновениям.
+    private final Vector3d gyroFilteredUp = new Vector3d(0.0, 1.0, 0.0);
+    private boolean gyroFilteredUpValid = false;
+    // Постоянная времени сглаживания в секундах: за это время фильтр
+    // "нагоняет" ~63% (1-1/e) реального отклонения. Подобрана так, чтобы
+    // перекрывать типичный период колебаний мягкой подвески (несколько
+    // тиков туда-обратно), но не создавать заметной задержки реакции на
+    // настоящий устойчивый крен (пилот наклонил корабль намеренно, реальное
+    // опрокидывание) — такой крен нарастает МЕДЛЕННО относительно
+    // постоянной времени и фильтр его пропускает почти без искажения.
+    private static final double GYRO_TILT_FILTER_TIME_CONSTANT = 0.25; // ~5 тиков при 20 тик/сек
+    // Deadband с гистерезисом на ОТФИЛЬТРОВАННЫЙ tiltError: ниже входного
+    // порога PID считает конструкцию выровненной и НЕ выдаёт restoring-часть
+    // вообще (интеграл тоже не копится) — устраняет остаточный тычок даже от
+    // сглаженного, но ненулевого шума подвески. Выходной порог гистерезиса
+    // ниже входного (classic Schmitt trigger), чтобы deadband не "мигал"
+    // включённым/выключенным на каждый тик при tiltError, колеблющемся
+    // ровно возле границы — иначе сам deadband стал бы источником дребезга.
+    private static final double GYRO_TILT_DEADBAND_ENTER = 0.035; // рад (~2°) — выше этого PID точно активен
+    private static final double GYRO_TILT_DEADBAND_EXIT = 0.02;   // рад (~1.15°) — ниже этого PID точно молчит
+    private boolean gyroDeadbandActive = false;
     private int gyroStuckTicks = 0;
     private int gyroUnstickCooldownLeft = 0;
 
@@ -752,6 +794,8 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                 gyroPrevValid = false;
                 gyroPrevTiltErrorValid = false;
                 gyroCacheTicksLeft = 0;
+                gyroFilteredUpValid = false; // фильтр переинициализируется текущей ориентацией на след. тике, без "подтягивания" через долгую паузу
+                gyroDeadbandActive = false;
                 LOGGER.info("[MachineSoul][gyro] pos={} аварийное отключение снято, стабилизация возобновлена", worldPosition);
             }
             return;
@@ -798,6 +842,50 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         boolean nearVertical = tiltSin < GYRO_EPS; // currentUp почти совпадает/противоположен worldUp — ось не определена
         if (!nearVertical) {
             tiltAxis.mul(1.0 / tiltSin); // нормализуем: |cross|=sin(угол), безопасно делить (tiltSin >= GYRO_EPS)
+        }
+
+        // ── EMA-фильтрация currentUp для PID (гашение дребезга подвески) ────
+        // alpha = timeStep / (timeStep + tau): стандартная дискретная EMA с
+        // постоянной времени tau, корректно адаптируется к переменному
+        // timeStep (суб-тики Sable) без пересчёта вручную. На первом валидном
+        // тике фильтр инициализируется текущим значением — без "разгона" с
+        // произвольной точки, которое иначе выглядело бы как ложный скачок.
+        if (!gyroFilteredUpValid) {
+            gyroFilteredUp.set(currentUp);
+            gyroFilteredUpValid = true;
+        } else {
+            double alpha = timeStep / (timeStep + GYRO_TILT_FILTER_TIME_CONSTANT);
+            gyroFilteredUp.lerp(currentUp, alpha);
+            double filteredLen = gyroFilteredUp.length();
+            if (filteredLen > GYRO_EPS) {
+                gyroFilteredUp.mul(1.0 / filteredLen); // ре-нормализация: lerp двух единичных векторов даёт |v|<1
+            } else {
+                gyroFilteredUp.set(currentUp);
+            }
+        }
+        Vector3d filteredTiltAxis = new Vector3d(gyroFilteredUp).cross(worldUp);
+        double filteredTiltSin = filteredTiltAxis.length();
+        double filteredTiltCos = gyroFilteredUp.dot(worldUp);
+        double filteredTiltError = Math.atan2(filteredTiltSin, filteredTiltCos);
+        boolean filteredNearVertical = filteredTiltSin < GYRO_EPS;
+        if (!filteredNearVertical) {
+            filteredTiltAxis.mul(1.0 / filteredTiltSin);
+        }
+
+        // ── Deadband с гистерезисом на отфильтрованный tiltError ────────────
+        // Ниже GYRO_TILT_DEADBAND_EXIT деактивируем PID полностью (restoring
+        // не выдаётся, интеграл не копится) — конструкция считается
+        // выровненной. Выше GYRO_TILT_DEADBAND_ENTER — точно активируем.
+        // Между ними сохраняется предыдущее состояние (гистерезис Шмитта),
+        // что не даёт deadband самому мигать на границе.
+        if (gyroDeadbandActive) {
+            if (filteredTiltError < GYRO_TILT_DEADBAND_EXIT) {
+                gyroDeadbandActive = false;
+            }
+        } else {
+            if (filteredTiltError > GYRO_TILT_DEADBAND_ENTER) {
+                gyroDeadbandActive = true;
+            }
         }
 
         Vector3d angVel = handle.getAngularVelocity(new Vector3d());
@@ -876,6 +964,8 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             gyroCacheTicksLeft = 0; // форсируем пересчёт s после блокировки — ориентация могла сильно измениться
             gyroStuckTicks = 0; // после блокировки застревание не актуально — ситуация изменилась
             gyroPrevTiltErrorValid = false;
+            gyroFilteredUpValid = false; // переинициализация фильтра текущей ориентацией на след. тике
+            gyroDeadbandActive = false;
             if (angVel.lengthSquared() > GYRO_EPS * GYRO_EPS) {
                 MassData massDataLockdown = subLevel.getMassTracker();
                 if (massDataLockdown != null && !massDataLockdown.isInvalid()) {
@@ -992,12 +1082,21 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             yawGain = GYRO_MIN_GAIN_AT_HIGH_YAW + (1.0 - GYRO_MIN_GAIN_AT_HIGH_YAW) * t;
         }
 
-        double tiltDOmega = 0.0;
-        if (!nearVertical) {
-            gyroIntegralTilt += tiltError * timeStep;
+        // Restoring (П+И) и демпфер (Д) считаются раздельно, каждый на СВОЕЙ
+        // оси: restoring — на filteredTiltAxis (фильтрованный вход, гасит
+        // дребезг подвески), демпфер — на сырой tiltAxis/angVelTilt (не
+        // фильтруется: должен гасить реальную угловую скорость немедленно,
+        // иначе быстрые толчки от кочек перестанут демпфироваться и энергия
+        // будет копиться). Раньше оба складывались в один tiltDOmega и
+        // применялись по ОДНОЙ оси — с введением фильтра оси restoring и
+        // демпфера в общем случае перестали совпадать, складывать их стало
+        // физически некорректно.
+        double tiltRestoring = 0.0;
+        if (!filteredNearVertical && gyroDeadbandActive) {
+            gyroIntegralTilt += filteredTiltError * timeStep;
             gyroIntegralTilt = Math.max(-GYRO_MAX_INTEGRAL, Math.min(GYRO_MAX_INTEGRAL, gyroIntegralTilt));
 
-            double tiltPTerm = tiltError * GYRO_KP * yawGain;
+            double tiltPTerm = filteredTiltError * GYRO_KP * yawGain;
             double tiltITerm = gyroIntegralTilt * GYRO_KI * yawGain;
 
             // Восстанавливающая часть (П+И) — ограничена потолком, стабилизатор
@@ -1006,19 +1105,37 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             // застревании (см. блок Breakaway выше) — иначе он не может
             // "продавить" статическое сопротивление опоры.
             double effectiveRestoringCap = GYRO_MAX_RESTORING_DELTA_OMEGA * restoringMultiplier;
-            double tiltRestoring = (tiltPTerm + tiltITerm) * timeStep;
+            tiltRestoring = (tiltPTerm + tiltITerm) * timeStep;
             tiltRestoring = Math.max(-effectiveRestoringCap, Math.min(effectiveRestoringCap, tiltRestoring));
+            tiltRestoring = Math.max(-GYRO_MAX_DELTA_OMEGA_PER_TICK, Math.min(GYRO_MAX_DELTA_OMEGA_PER_TICK, tiltRestoring));
+        } else {
+            // Либо near-vertical, либо deadband активен (конструкция в
+            // пределах допуска выровненности) — restoring не выдаётся вообще,
+            // интеграл не копим, чтобы не накапливать шум на неопределённом/
+            // незначимом отклонении.
+            gyroIntegralTilt = 0.0;
+        }
+        if (filteredNearVertical) {
+            gyroStuckTicks = 0;
+            gyroPrevTiltErrorValid = false;
+        }
 
-            // Демпфер (Д) считается ОТДЕЛЬНО от потолка restoring-члена: если
-            // |angVelTilt| велика, демпфер обязан быть способен погасить её
-            // полностью за тик, иначе на больших скоростях (после сильного
-            // внешнего удара) раскачка не гасится и корабль улетает в
-            // бесконтрольное вращение. Демпфер клипуется по модулю текущей
-            // angVelTilt (не может перегасить в обратную сторону), но НЕ
-            // клипуется общим потолком GYRO_MAX_RESTORING_DELTA_OMEGA — это и
-            // есть "физически честная" clamping-формула демпфера. Демпфер НЕ
-            // ослабляется yawGain — гасить угловую скорость нужно всегда,
-            // ослаблять нужно только "толкающую" restoring-часть.
+        // Демпфер (Д) считается ОТДЕЛЬНО от потолка restoring-члена: если
+        // |angVelTilt| велика, демпфер обязан быть способен погасить её
+        // полностью за тик, иначе на больших скоростях (после сильного
+        // внешнего удара) раскачка не гасится и корабль улетает в
+        // бесконтрольное вращение. Демпфер клипуется по модулю текущей
+        // angVelTilt (не может перегасить в обратную сторону), но НЕ
+        // клипуется общим потолком GYRO_MAX_RESTORING_DELTA_OMEGA — это и
+        // есть "физически честная" clamping-формула демпфера. Демпфер НЕ
+        // ослабляется yawGain — гасить угловую скорость нужно всегда,
+        // ослаблять нужно только "толкающую" restoring-часть. Демпфер также
+        // НЕ проходит через deadband — деадбенд относится только к статичной
+        // ошибке угла, а не к угловой скорости: даже в пределах допустимого
+        // крена угловую скорость (например, от толчка на кочке) гасить нужно
+        // всегда, иначе она успеет накопиться в реальный крен на след. тиках.
+        double tiltDamping = 0.0;
+        if (!nearVertical) {
             double tiltDampingRaw = -angVelTilt * GYRO_KD;
             double tiltDampingClamped = Math.max(-Math.abs(angVelTilt), Math.min(Math.abs(angVelTilt), tiltDampingRaw));
             if (Math.abs(angVelTilt) > GYRO_MAX_ANGVEL_BEFORE_HARD_BRAKE) {
@@ -1026,25 +1143,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                 // независимо от того, что насчитал КД-коэффициент.
                 tiltDampingClamped = -angVelTilt;
             }
-
-            tiltDOmega = tiltRestoring + tiltDampingClamped;
-            // Rate-limit: даже физически честный dOmega/s может дать взрывной
-            // impulseScalar при малом s (корабль почти симметричен вдоль
-            // tiltAxis) или при резонансе с прецессией. Ограничиваем сам
-            // целевой прирост угловой скорости за тик безусловным потолком —
-            // это тот самый предохранитель, которого не хватало для остановки
-            // скачка -0.04 → -3.68 рад/с за один тик, зафиксированного в логах.
-            tiltDOmega = Math.max(-GYRO_MAX_DELTA_OMEGA_PER_TICK, Math.min(GYRO_MAX_DELTA_OMEGA_PER_TICK, tiltDOmega));
-        } else {
-            // currentUp почти коллинеарен worldUp (корабль либо ровно, либо
-            // перевёрнут вверх дном) — ось наклона не определена, интеграл не
-            // копим, чтобы не накапливать шум на неопределённом направлении.
-            gyroIntegralTilt = 0.0;
-            gyroStuckTicks = 0;
-            gyroPrevTiltErrorValid = false;
+            tiltDamping = Math.max(-GYRO_MAX_DELTA_OMEGA_PER_TICK, Math.min(GYRO_MAX_DELTA_OMEGA_PER_TICK, tiltDampingClamped));
         }
 
-        if (Math.abs(tiltDOmega) < 1e-12) return;
+        if (Math.abs(tiltRestoring) < 1e-12 && Math.abs(tiltDamping) < 1e-12) return;
 
         // ── Перевод целевых dOmega в импульс через реальный тензор инерции ──
         MassData massData = subLevel.getMassTracker();
@@ -1055,23 +1157,39 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
         Vector3d totalImpulse = new Vector3d();
 
-        if (Math.abs(tiltDOmega) >= 1e-12) {
+        if (Math.abs(tiltRestoring) >= 1e-12) {
+            double sRestoring = gyroGetEffectiveInverseInertia(orientation, filteredTiltAxis, massData);
+            if (Double.isFinite(sRestoring) && sRestoring > 1e-6) {
+                double impulseScalarRestoring = tiltRestoring / sRestoring;
+                if (Double.isFinite(impulseScalarRestoring)) {
+                    totalImpulse.add(new Vector3d(filteredTiltAxis).mul(impulseScalarRestoring));
+                } else {
+                    final double dOmegaLog = tiltRestoring, sLog = sRestoring;
+                    gyroDebugLog(() -> "tilt restoring impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
+                }
+            } else {
+                final double sLog = sRestoring;
+                gyroDebugLog(() -> "tilt restoring s недействителен: s=" + sLog);
+            }
+        }
+
+        if (Math.abs(tiltDamping) >= 1e-12) {
             double s = gyroGetEffectiveInverseInertia(orientation, tiltAxis, massData);
             // Порог отсечки поднят с 1e-12 до 1e-6: почти-сингулярный s (корабль
             // почти симметричен/тонок вдоль оси коррекции) давал impulseScalar
             // порядка 10^6 и выше даже при малом dOmega — именно так возникал
             // взрывной разгон angVel, зафиксированный в логах.
             if (Double.isFinite(s) && s > 1e-6) {
-                double impulseScalar = tiltDOmega / s;
+                double impulseScalar = tiltDamping / s;
                 if (Double.isFinite(impulseScalar)) {
                     totalImpulse.add(new Vector3d(tiltAxis).mul(impulseScalar));
                 } else {
-                    final double dOmegaLog = tiltDOmega, sLog = s;
-                    gyroDebugLog(() -> "tilt impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
+                    final double dOmegaLog = tiltDamping, sLog = s;
+                    gyroDebugLog(() -> "tilt damping impulseScalar недействителен: dOmega=" + dOmegaLog + " s=" + sLog);
                 }
             } else {
                 final double sLog = s;
-                gyroDebugLog(() -> "tilt s недействителен: s=" + sLog);
+                gyroDebugLog(() -> "tilt damping s недействителен: s=" + sLog);
             }
         }
 
@@ -1159,7 +1277,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         }
         if (totalImpulse.lengthSquared() < 1e-24) return;
 
-        final double tiltErrorLog = tiltError, angVelTiltLog = angVelTilt, tiltDOmegaLog = tiltDOmega;
+        final double tiltErrorLog = tiltError, angVelTiltLog = angVelTilt, tiltDOmegaLog = tiltRestoring + tiltDamping;
         final double yawRateLog = yawRate;
         final boolean nearVerticalLog = nearVertical;
         final double restoringMultiplierLog = restoringMultiplier;
