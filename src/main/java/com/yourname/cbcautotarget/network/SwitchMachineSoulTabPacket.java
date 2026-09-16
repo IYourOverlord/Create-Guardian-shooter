@@ -104,8 +104,8 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
             // Фильтр игроков (вайтлист)
             buf.writeBoolean(filter.isWhitelistEnabled());
             net.minecraft.network.codec.ByteBufCodecs.collection(
-                java.util.ArrayList::new,
-                net.minecraft.network.codec.ByteBufCodecs.STRING_UTF8
+                    java.util.ArrayList::new,
+                    net.minecraft.network.codec.ByteBufCodecs.STRING_UTF8
             ).encode(buf, new java.util.ArrayList<>(filter.getWhitelist()));
             buf.writeInt(soul.getWhitelistMode().id());
             // Маска категорий целей (Hostile/Passive/Players/Enemy Commanders).
@@ -118,8 +118,8 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
             LOGGER.info("[SwitchTab] openTarget pos={} WROTE mask={} into menu buffer", soul.getBlockPos(), filter.getMask());
             // Фильтр дружественных командеров
             net.minecraft.network.codec.ByteBufCodecs.collection(
-                java.util.ArrayList::new,
-                net.minecraft.network.codec.ByteBufCodecs.STRING_UTF8
+                    java.util.ArrayList::new,
+                    net.minecraft.network.codec.ByteBufCodecs.STRING_UTF8
             ).encode(buf, new java.util.ArrayList<>(soul.getCommanderFilterData().getFriendlyIds()));
         });
     }
@@ -128,6 +128,7 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
         sp.openMenu(simpleProvider(soul, Tab.NPC), buf -> {
             buf.writeBlockPos(soul.getBlockPos());
             buf.writeBoolean(soul.isGyroStabilizationActive());
+            buf.writeBoolean(soul.isCreativeLocked());
         });
     }
 

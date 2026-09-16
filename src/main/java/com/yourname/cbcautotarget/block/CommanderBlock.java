@@ -4,12 +4,16 @@ import com.mojang.serialization.MapCodec;
 import com.yourname.cbcautotarget.ModBlockEntities;
 import com.yourname.cbcautotarget.blockentity.CommanderBlockEntity;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.block.BaseEntityBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -20,6 +24,7 @@ import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 
 import javax.annotation.Nullable;
 
@@ -145,5 +150,28 @@ public class CommanderBlock extends BaseEntityBlock {
             }
         }
         super.onRemove(state, level, pos, newState, movedByPiston);
+    }
+
+    /**
+     * Pick-block (среднее колёсико мыши): базовая реализация BaseEntityBlock
+     * копирует весь NBT блок-сущности в компонент DataComponents.BLOCK_ENTITY_DATA,
+     * что позволяет установить блок повторно со всеми сохранёнными настройками
+     * (фильтр целей, ключ альянса и т.д.).
+     * OwnerUUID/CommanderUUID намеренно вычищаются из копии — при повторной
+     * установке скопированного блока setPlacedBy() назначит нового владельца,
+     * а CommanderBlockEntity.onLoad() сгенерирует новый CommanderUUID,
+     * как для только что размещённого блока.
+     */
+    @Override
+    public ItemStack getCloneItemStack(BlockState state, HitResult hit, LevelReader level, BlockPos pos, Player player) {
+        ItemStack stack = super.getCloneItemStack(state, hit, level, pos, player);
+        CustomData data = stack.get(DataComponents.BLOCK_ENTITY_DATA);
+        if (data != null) {
+            CompoundTag tag = data.copyTag();
+            tag.remove("OwnerUUID");
+            tag.remove("CommanderUUID");
+            stack.set(DataComponents.BLOCK_ENTITY_DATA, CustomData.of(tag));
+        }
+        return stack;
     }
 }
