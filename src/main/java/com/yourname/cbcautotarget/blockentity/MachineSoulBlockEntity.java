@@ -714,6 +714,20 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // линейная интерполяция по |tiltError|/π.
     private static final double GYRO_MIN_DELTA_OMEGA_PER_TICK = 0.035;
     private static final double GYRO_MAX_DELTA_OMEGA_PER_TICK = 0.35;
+    // Отдельный, значительно более широкий потолок ТОЛЬКО для демпфера
+    // (Д-часть). БАГ, который он чинит: демпфер и restoring раньше делили
+    // один и тот же потолок GYRO_MAX_DELTA_OMEGA_PER_TICK=0.35. При резком
+    // внешнем возмущении (например, разбалтывающиеся колёса дают удар по
+    // yaw, который через гироскопическую связь создаёт скачок angVelTilt
+    // до 0.8+ рад/с — см. логи: "yawRate=0.8090" на почти ровной
+    // конструкции) демпфер ХОЧЕТ погасить всю скорость за тик — это
+    // безопасно и физически корректно, тормозить существующее движение
+    // никогда не создаёт новый рывок, — но обрезался тем же потолком 0.35,
+    // оставляя недогашенный остаток. Остаток на следующем тике складывался
+    // с продолжающимся возмущением и restoring-толчком, лавинообразно
+    // нарастая вплоть до HARD BRAKE → 4×LOCKDOWN → аварийное отключение →
+    // "ещё хуже" на следующем цикле стабилизации.
+    private static final double GYRO_MAX_DAMPING_DELTA_OMEGA = 2.5;
     // Отдельный, более узкий slew-rate ТОЛЬКО на restoring-часть (П+И) —
     // ограничивает не абсолютную величину, а её ПРИРАЩЕНИЕ между соседними
     // тиками (см. gyroPrevRestoring), чтобы стабилизатор сам не мог вносить
@@ -1289,7 +1303,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                 // независимо от того, что насчитал КД-коэффициент.
                 tiltDampingClamped = -angVelTilt;
             }
-            tiltDamping = Math.max(-GYRO_MAX_DELTA_OMEGA_PER_TICK, Math.min(GYRO_MAX_DELTA_OMEGA_PER_TICK, tiltDampingClamped));
+            tiltDamping = Math.max(-GYRO_MAX_DAMPING_DELTA_OMEGA, Math.min(GYRO_MAX_DAMPING_DELTA_OMEGA, tiltDampingClamped));
         }
 
         if (Math.abs(tiltRestoring) < 1e-12 && Math.abs(tiltDamping) < 1e-12) return;
