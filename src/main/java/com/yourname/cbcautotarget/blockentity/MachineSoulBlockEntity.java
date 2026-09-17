@@ -311,6 +311,51 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // как раскачка. Сбрасывается в 0, когда restoring не выдаётся вообще.
     private double gyroPrevRestoring = 0.0;
 
+    // ═══════════════════════════════════════════════════════════════════
+    // ПРОСТАЯ RECOVERY STATE-MACHINE (замена активного PID-стабилизатора)
+    // ═══════════════════════════════════════════════════════════════════
+    // Все попытки сделать "мягкий, но надёжный" непрерывный PID-стабилизатор
+    // крена провалились: любой набор коэффициентов, демпферов, breakaway/
+    // UNSTICK-эвристик и защит от резонанса рано или поздно ловит новый
+    // граничный случай (кочка, разбалтывание колёс, резкий поворот корпусом)
+    // и превращает лёгкое возмущение в раскачку или переворот — система
+    // слишком много "борется" сама с собой на каждом тике.
+    // Новый подход принципиально проще и надёжнее: пока конструкция не
+    // перевёрнута — стабилизатор НИЧЕГО не делает (полная свобода вращения
+    // и наклона, никакого сопротивления). Только когда конструкция реально
+    // и устойчиво перевёрнута (glava внизу дольше GYRO_RECOVERY_CONFIRM_TICKS
+    // подряд — не мгновенный скачок при активном пилотировании, а
+    // действительно лежит), включается разовая последовательность из 3
+    // фаз: приподнять над землёй, довернуть до вертикали заданной угловой
+    // скоростью, отпустить (вернуться в полностью свободный режим).
+    private enum GyroRecoveryPhase { IDLE, LIFT, ROTATE }
+    private GyroRecoveryPhase gyroRecoveryPhase = GyroRecoveryPhase.IDLE;
+    private int gyroRecoveryConfirmTicks = 0; // сколько тиков подряд конструкция устойчиво перевёрнута
+    private int gyroRecoveryPhaseTicksLeft = 0; // сколько тиков осталось в текущей фазе LIFT/ROTATE
+
+    // Порог снижен с 2.27 (130°) до 1.45 (~83°, чуть меньше прямого угла):
+    // "перевёрнута" в бытовом смысле — это и "легла на бок" (90°), и "легла
+    // вверх дном" (180°), а не только близкое к полному перевороту. При
+    // старом пороге 130° конструкция, упавшая ровно на бок (~90-110°),
+    // никогда не набирала GYRO_RECOVERY_CONFIRM_TICKS и оставалась лежать
+    // бесконечно — именно так и произошло (см. жалобу: "перевернул на бок,
+    // несколько секунд ничего не произошло, а должна была перевернуться").
+    private static final double GYRO_RECOVERY_TILT_THRESHOLD = 1.45;
+    private static final int GYRO_RECOVERY_CONFIRM_TICKS = 30; // ~1.5с устойчивого переворота, прежде чем включать recovery (не реагируем на кратковременный кувырок при активном пилотировании)
+    private static final int GYRO_RECOVERY_LIFT_TICKS = 12; // ~0.6с — фаза вертикального отрыва от земли перед разворотом
+    private static final double GYRO_RECOVERY_LIFT_VELOCITY = 3.0; // м/с, желаемая вертикальная скорость на фазе LIFT
+    private static final double GYRO_RECOVERY_ROTATE_OMEGA = 1.6; // рад/с, постоянная угловая скорость разворота на фазе ROTATE вокруг tiltAxis
+    // Таймаут фазы ROTATE: если конструкция лежит на боку, разворачивающий
+    // борт корпуса физически упирается в землю — реактивный противомомент
+    // контакта "съедает" постоянный угловой импульс, и вращение буксует
+    // бесконечно на месте без прогресса (см. лог: фаза ROTATE длилась 18+
+    // секунд без завершения, сессия оборвалась раньше, чем конструкция
+    // выровнялась). По истечении этого таймаута возвращаемся в LIFT ещё раз —
+    // повторный вертикальный толчок снимает контакт с опорой и разворот
+    // продолжается уже в воздухе, где противомомента нет.
+    private static final int GYRO_RECOVERY_ROTATE_TIMEOUT_TICKS = 40; // ~2с на одну попытку довернуть, прежде чем переприжаться
+    private static final double GYRO_RECOVERY_DONE_TILT = 0.20; // рад, ~11° — считаем выровненной и отпускаем конструкцию
+
     // ── Кэш эффективной инерции вдоль оси наклона (оптимизация) ─────────────
     // n·invI·n дорого считать каждый физ-субтик (matrix transform + dot).
     // tiltAxis обычно меняется плавно между соседними тиками при штатной
@@ -945,6 +990,108 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             tiltAxis.mul(1.0 / tiltSin); // нормализуем: |cross|=sin(угол), безопасно делить (tiltSin >= GYRO_EPS)
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        // RECOVERY STATE-MACHINE — единственная активная логика стабилизатора.
+        // См. комментарий у объявления полей gyroRecoveryPhase/GYRO_RECOVERY_*
+        // выше: весь дальнейший код метода (PID/breakaway/UNSTICK/LOCKDOWN)
+        // НЕ выполняется — он оставлен ниже нетронутым только для истории
+        // и возможного возврата, но каждая ветка recovery ниже завершается
+        // return'ом, так что старый каскад больше не достигается никогда.
+        // ═══════════════════════════════════════════════════════════════
+        switch (gyroRecoveryPhase) {
+            case IDLE: {
+                if (tiltError > GYRO_RECOVERY_TILT_THRESHOLD) {
+                    gyroRecoveryConfirmTicks++;
+                } else {
+                    gyroRecoveryConfirmTicks = 0;
+                }
+                if (gyroRecoveryConfirmTicks >= GYRO_RECOVERY_CONFIRM_TICKS) {
+                    gyroRecoveryPhase = GyroRecoveryPhase.LIFT;
+                    gyroRecoveryPhaseTicksLeft = GYRO_RECOVERY_LIFT_TICKS;
+                    gyroRecoveryConfirmTicks = 0;
+                    LOGGER.info("[MachineSoul][gyro] pos={} RECOVERY: конструкция устойчиво перевёрнута (tilt={}), начинаем подъём",
+                            worldPosition, String.format(java.util.Locale.ROOT, "%.3f", tiltError));
+                }
+                // IDLE = конструкция полностью свободна, никаких импульсов —
+                // именно то поведение, которое было запрошено: "не мешать",
+                // пока реально не перевёрнута.
+                return;
+            }
+            case LIFT: {
+                // Фаза подъёма: короткий постоянный вертикальный толчок,
+                // чтобы физически оторвать конструкцию от земли перед
+                // разворотом — без этого точка опоры (колёса/корпус, лежащий
+                // на боку) создаёт противомомент и разворот "продавливает"
+                // сопротивление контакта вместо чистого вращения в воздухе.
+                MassData massDataLift = subLevel.getMassTracker();
+                if (massDataLift != null && !massDataLift.isInvalid() && massDataLift.getMass() > GYRO_EPS) {
+                    Vector3d liftImpulse = new Vector3d(worldUp).mul(massDataLift.getMass() * GYRO_RECOVERY_LIFT_VELOCITY / GYRO_RECOVERY_LIFT_TICKS);
+                    if (Double.isFinite(liftImpulse.x) && Double.isFinite(liftImpulse.y) && Double.isFinite(liftImpulse.z)) {
+                        handle.applyLinearAndAngularImpulse(liftImpulse, new Vector3d(0.0, 0.0, 0.0), true);
+                    }
+                }
+                gyroRecoveryPhaseTicksLeft--;
+                if (gyroRecoveryPhaseTicksLeft <= 0) {
+                    gyroRecoveryPhase = GyroRecoveryPhase.ROTATE;
+                    gyroRecoveryPhaseTicksLeft = GYRO_RECOVERY_ROTATE_TIMEOUT_TICKS;
+                    LOGGER.info("[MachineSoul][gyro] pos={} RECOVERY: подъём завершён, начинаем разворот", worldPosition);
+                }
+                return;
+            }
+            case ROTATE: {
+                if (nearVertical || tiltError < GYRO_RECOVERY_DONE_TILT) {
+                    // Довернули до почти-вертикали (или прошли через саму
+                    // вертикаль — nearVertical) — отпускаем конструкцию
+                    // полностью, без "дотягивания" остаточным импульсом:
+                    // дальше она падает и оседает под естественной физикой.
+                    gyroRecoveryPhase = GyroRecoveryPhase.IDLE;
+                    gyroRecoveryPhaseTicksLeft = 0;
+                    LOGGER.info("[MachineSoul][gyro] pos={} RECOVERY: выровнена (tilt={}), отпущена",
+                            worldPosition, String.format(java.util.Locale.ROOT, "%.3f", tiltError));
+                    return;
+                }
+                gyroRecoveryPhaseTicksLeft--;
+                if (gyroRecoveryPhaseTicksLeft <= 0) {
+                    // Таймаут: разворот забуксовал (упор в опору) — повторный
+                    // LIFT снимает контакт с землёй, после чего ROTATE
+                    // продолжится уже без противомомента опоры.
+                    gyroRecoveryPhase = GyroRecoveryPhase.LIFT;
+                    gyroRecoveryPhaseTicksLeft = GYRO_RECOVERY_LIFT_TICKS;
+                    LOGGER.info("[MachineSoul][gyro] pos={} RECOVERY: разворот забуксовал (tilt={}), повторный подъём",
+                            worldPosition, String.format(java.util.Locale.ROOT, "%.3f", tiltError));
+                    return;
+                }
+                // Постоянная (не PID, без коэффициентов усиления/демпфера,
+                // которые и были источником всех прошлых проблем) угловая
+                // скорость довода к вертикали вдоль tiltAxis — простое и
+                // предсказуемое кинематическое вращение, которое невозможно
+                // "раскачать", потому что оно не реагирует на производную
+                // ошибки и не суммирует несколько источников импульса.
+                MassData massDataRotate = subLevel.getMassTracker();
+                if (massDataRotate != null && !massDataRotate.isInvalid() && massDataRotate.getMass() > GYRO_EPS) {
+                    double sRotate = gyroGetEffectiveInverseInertia(orientation, tiltAxis, massDataRotate);
+                    if (Double.isFinite(sRotate) && sRotate > 1e-6) {
+                        Vector3d angVelRotate = handle.getAngularVelocity(new Vector3d());
+                        double currentOmegaAlongAxis = angVelRotate.dot(tiltAxis);
+                        double desiredDelta = GYRO_RECOVERY_ROTATE_OMEGA - currentOmegaAlongAxis;
+                        double impulseScalarRotate = desiredDelta / sRotate;
+                        if (Double.isFinite(impulseScalarRotate)) {
+                            Vector3d rotateImpulse = new Vector3d(tiltAxis).mul(impulseScalarRotate);
+                            if (Double.isFinite(rotateImpulse.x) && Double.isFinite(rotateImpulse.y) && Double.isFinite(rotateImpulse.z)) {
+                                handle.applyAngularImpulse(rotateImpulse);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        return;
+
+        // ═══ Ниже — старый непрерывный PID-стабилизатор, БОЛЬШЕ НЕ ВЫПОЛНЯЕТСЯ ═══
+        // (недостижимый код после return выше; оставлен для истории/справки)
+        /*
+
         // ── EMA-фильтрация currentUp для PID (гашение дребезга подвески) ────
         // alpha = timeStep / (timeStep + tau): стандартная дискретная EMA с
         // постоянной времени tau, корректно адаптируется к переменному
@@ -1016,17 +1163,24 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             // tilt скачет до 0.6-2.0 из-за прецессии, а не из-за самого yaw).
             double jumpYaw = Math.abs(yawRate - gyroPrevYawRate);
             // Порог скачка масштабируется вверх при большом |tiltError|
-            // (до GYRO_LOCKDOWN_JUMP_THRESHOLD_MULTIPLIER раз при tilt≈π):
-            // именно в диапазоне "перевёрнут" (tilt>~1.5 рад) сам законный,
-            // желаемый рывок демпфера/restoring для самовыравнивания создаёт
-            // резкое приращение angVelTilt, неотличимое по величине от
-            // внешнего удара — фиксированный порог поэтому постоянно ложно
-            // срабатывал LOCKDOWN'ом именно в момент, когда стабилизатор
-            // наконец начинал реально продавливать переворот (см. логи:
-            // tilt=1.73→2.08→LOCKDOWN×4→аварийное отключение, корабль
-            // застревал вверх ногами на десятки секунд).
+            // (до GYRO_LOCKDOWN_JUMP_THRESHOLD_MULTIPLIER раз при tilt≈π) —
+            // как и раньше — И ДОПОЛНИТЕЛЬНО при большом |yawRate| (до того
+            // же множителя при yawRate≈GYRO_YAW_DESTAB_THRESHOLD*3): быстрый
+            // управляемый поворот корпусом (игрок покрутил штурвал) создаёт
+            // через недиагональные компоненты тензора инерции законную
+            // гироскопическую прецессию tilt — усиленный демпфер (после
+            // расширения его потолка до GYRO_MAX_DAMPING_DELTA_OMEGA) активно
+            // и правильно гасит этот наклон, что само по себе выглядит как
+            // резкий jumpTilt, хотя реального удара не было (см. логи:
+            // "LOCKDOWN TRIGGERED: jumpTilt=2.115 jumpYaw=2.864" сразу после
+            // активного разворота корпусом, yawRate доходил до ~1.0-2.8).
+            // Без этого расширения LOCKDOWN блокировал стабилизатор именно в
+            // момент, когда демпфер начинал корректно парировать прецессию —
+            // корабль ронялся уже перевёрнутым, как на скриншоте.
+            double tiltScale = Math.min(1.0, Math.abs(tiltError) / Math.PI);
+            double yawScale = Math.min(1.0, Math.abs(yawRate) / (GYRO_YAW_DESTAB_THRESHOLD * 3.0));
             double jumpThreshold = GYRO_LOCKDOWN_JUMP_THRESHOLD
-                    * (1.0 + (GYRO_LOCKDOWN_JUMP_THRESHOLD_MULTIPLIER - 1.0) * Math.min(1.0, Math.abs(tiltError) / Math.PI));
+                    * (1.0 + (GYRO_LOCKDOWN_JUMP_THRESHOLD_MULTIPLIER - 1.0) * Math.max(tiltScale, yawScale));
             if (jumpTilt > jumpThreshold) {
                 gyroLockdownTicksLeft = GYRO_LOCKDOWN_TICKS;
                 // ── Счётчик подряд идущих LOCKDOWN (детектор резонансного срыва) ──
@@ -1040,10 +1194,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                     gyroConsecutiveLockdowns = 1;
                 }
                 gyroLockdownFreeStreakTicks = 0;
-                final double jumpTiltLog = jumpTilt, jumpYawLog = jumpYaw;
+                final double jumpTiltLog = jumpTilt, jumpYawLog = jumpYaw, jumpThresholdLog = jumpThreshold;
                 gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
                         "LOCKDOWN TRIGGERED: jumpTilt=%.3f jumpYaw=%.3f > порог=%.3f, блокировка на %d тиков, подряд=%d",
-                        jumpTiltLog, jumpYawLog, GYRO_LOCKDOWN_JUMP_THRESHOLD, GYRO_LOCKDOWN_TICKS, gyroConsecutiveLockdowns));
+                        jumpTiltLog, jumpYawLog, jumpThresholdLog, GYRO_LOCKDOWN_TICKS, gyroConsecutiveLockdowns));
 
                 if (gyroConsecutiveLockdowns >= GYRO_CONSECUTIVE_LOCKDOWNS_THRESHOLD) {
                     gyroEmergencyOffTicksLeft = GYRO_EMERGENCY_OFF_TICKS;
@@ -1449,6 +1603,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                 massData.getMass(), nearVerticalLog, stuckTicksLog, restoringMultiplierLog, consecutiveLockdownsLog));
 
         handle.applyAngularImpulse(totalImpulse);
+        */
     }
 
     /**
