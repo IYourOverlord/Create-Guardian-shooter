@@ -8,6 +8,7 @@ import com.yourname.cbcautotarget.compat.SableCompat;
 import com.yourname.cbcautotarget.menu.ControllerMenu;
 import com.yourname.cbcautotarget.network.SyncWhitelistPacket;
 import com.yourname.cbcautotarget.util.BallisticSolver;
+import com.yourname.cbcautotarget.util.BigCannonBreechFeeder;
 import com.yourname.cbcautotarget.util.LineOfSightUtil;
 import com.yourname.cbcautotarget.util.ShipAimSolver;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
@@ -38,6 +39,7 @@ import net.neoforged.neoforge.network.PacketDistributor;
 import rbasamoyai.createbigcannons.cannon_control.ControlPitchContraption;
 import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockEntity;
 import rbasamoyai.createbigcannons.cannon_control.contraption.AbstractMountedCannonContraption;
+import rbasamoyai.createbigcannons.cannon_control.contraption.MountedBigCannonContraption;
 import rbasamoyai.createbigcannons.cannon_control.contraption.PitchOrientedContraptionEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1210,6 +1212,22 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
     private void tryTransferToCannon(Level level) {
         if (cannonMountPos == null) return;
+
+        // Большая пушка (MountedBigCannonContraption) не реализует GetItemStorage и не имеет
+        // обычного IItemHandler (getItemHandler ниже всегда вернёт null для неё) — зарядка
+        // снарядов/картриджей в её Quick-Firing Breech устроена как замена блока в казённике,
+        // а не как вставка предмета. Обрабатываем этот случай отдельно, тем же путём, что и
+        // Mechanical Arm из Create (CannonMountPoint#bigCannonInsert), и выходим — для
+        // автопушки этот код не ходит, для неё работает generic-путь через IItemHandler ниже.
+        CannonMountBlockEntity mountForBigCannon = getMount(level);
+        if (mountForBigCannon != null) {
+            PitchOrientedContraptionEntity poce = mountForBigCannon.getContraption();
+            if (poce != null && poce.getContraption() instanceof MountedBigCannonContraption bigCannon) {
+                if (BigCannonBreechFeeder.feed(bigCannon, poce, inventory)) setChanged();
+                return;
+            }
+        }
+
         for (Direction dir : Direction.values()) {
             IItemHandler h = level.getCapability(Capabilities.ItemHandler.BLOCK, cannonMountPos, dir);
             if (h == null) continue;

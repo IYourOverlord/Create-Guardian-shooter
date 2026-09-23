@@ -572,8 +572,13 @@ public class CommanderBlockEntity extends BlockEntity implements MenuProvider {
     public int getFilterMask() { return filterData.getMask(); }
     public void setFilterMask(int mask) {
         LOGGER.debug("[setFilterMask] {} -> {} at {}", Integer.toBinaryString(filterData.getMask()), Integer.toBinaryString(mask), worldPosition);
+        // ВАЖНО: фильтр редактируется локально в блоке командера и НЕ рассылается
+        // подчинённым контроллерам сразу. Рассылка происходит только по нажатию
+        // кнопки активации (broadcastActivate) — она сама берёт актуальный
+        // filterData на момент нажатия. Пока активация не нажата, контроллеры,
+        // управляемые этим командером, продолжают работать с той настройкой
+        // фильтра, что была передана им в прошлый раз.
         filterData.setMask(mask);
-        broadcastFilterUpdate();
         setChanged();
     }
     /** Только для клиентского dummy — без side-эффектов. */
