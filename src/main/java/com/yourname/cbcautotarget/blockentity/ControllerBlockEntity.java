@@ -532,10 +532,17 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 worldCenter.x - radius, worldCenter.y - radius, worldCenter.z - radius,
                 worldCenter.x + radius, worldCenter.y + radius, worldCenter.z + radius);
 
-        List<Entity> candidates = new ArrayList<>(
-                mainLevel.getEntitiesOfClass(LivingEntity.class, worldBox,
-                        e -> e.isAlive() && filterData.isAllowed(e)
-                                && !filterData.isNearAlly(e, mainLevel)));
+        List<LivingEntity> allInBox = mainLevel.getEntitiesOfClass(LivingEntity.class, worldBox, e -> e.isAlive());
+        List<Entity> candidates = new ArrayList<>();
+        for (LivingEntity e : allInBox) {
+            boolean allowed = filterData.isAllowed(e);
+            boolean nearAlly = allowed && filterData.isNearAlly(e, mainLevel);
+            if (allowed && !nearAlly) candidates.add(e);
+            else LOGGER.debug("[Scan] {} SKIP {} allowed={} nearAlly={} mask={}", worldPosition, e.getClass().getSimpleName(), allowed, nearAlly, Integer.toBinaryString(filterData.getMask()));
+        }
+        if (!allInBox.isEmpty()) {
+            LOGGER.info("[Scan] {} radius={} mask={} inBox={} candidates={}", worldPosition, radius, Integer.toBinaryString(filterData.getMask()), allInBox.size(), candidates.size());
+        }
 
         // Дополнительно ищем живые entity во всех sublevel-кораблях.
         // Сущности внутри sublevel'а находятся в его собственном Level и не видны
@@ -1248,6 +1255,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
     // ── Activation ────────────────────────────────────────────────────────────
     public boolean isActive() { return active; }
+    @Nullable public UUID getOwnerCommanderUUID() { return ownerCommanderUUID; }
 
     public void setActive(boolean newActive) {
         if (active == newActive) return;
@@ -1450,7 +1458,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             // Активация: принимаем только если контроллер свободен (нет владельца)
             // или владелец — тот же командер.
             if (ownerCommanderUUID != null && !ownerCommanderUUID.equals(srcCommanderUUID)) {
-                LOGGER.debug("[applyFromCommander] IGNORED activate from {} (owner={}), already owned at {}",
+                LOGGER.info("[applyFromCommander] IGNORED activate from {} (owner={}), already owned at {}",
                         srcCommanderUUID, ownerCommanderUUID, worldPosition);
                 return;
             }
@@ -1459,8 +1467,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             filterData.setWhitelistEnabled(cf.isWhitelistEnabled());
             filterData.replaceWhitelist(new ArrayList<>(cf.getWhitelist()));
             this.commanderPos = srcCommanderPos;
-            LOGGER.debug("[applyFromCommander] activate={} active={} cannonMountPos={} owner={} at {}",
-                    activate, active, cannonMountPos, ownerCommanderUUID, worldPosition);
+            LOGGER.info("[applyFromCommander] APPLY activate={} active={} cannonMountPos={} owner={} newMask={} at {}",
+                    activate, active, cannonMountPos, ownerCommanderUUID, Integer.toBinaryString(filterData.getMask()), worldPosition);
             // Принудительно обновляем SubLevel-кэш перед активацией, так как
             // блок мог быть пересоздан Sable (hotswap) или только что размещён.
             if (SableCompat.isAvailable() && level instanceof ServerLevel sl) {
@@ -1479,7 +1487,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         } else {
             // Деактивация: принимаем только от того командера, который активировал.
             if (ownerCommanderUUID != null && !ownerCommanderUUID.equals(srcCommanderUUID)) {
-                LOGGER.debug("[applyFromCommander] IGNORED deactivate from {} (owner={}), not our commander at {}",
+                LOGGER.info("[applyFromCommander] IGNORED deactivate from {} (owner={}), not our commander at {}",
                         srcCommanderUUID, ownerCommanderUUID, worldPosition);
                 return;
             }
@@ -1488,7 +1496,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             filterData.replaceWhitelist(new ArrayList<>(cf.getWhitelist()));
             this.commanderPos = srcCommanderPos;
             ownerCommanderUUID = null; // Освобождаем контроллер
-            LOGGER.debug("[applyFromCommander] deactivate accepted from {} at {}",
+            LOGGER.info("[applyFromCommander] deactivate accepted from {} at {}",
                     srcCommanderUUID, worldPosition);
             setActive(false);
         }

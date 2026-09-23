@@ -286,9 +286,9 @@ public class CommanderBlockEntity extends BlockEntity implements MenuProvider {
         wasActive = true;
         setChanged();
         List<ControllerBlockEntity> controllers = findNearbyControllers();
-        LOGGER.debug("[Activate] Found {} controllers for commander at {}", controllers.size(), worldPosition);
+        LOGGER.info("[Activate] Found {} controllers for commander at {} mask={}", controllers.size(), worldPosition, Integer.toBinaryString(filterData.getMask()));
         for (ControllerBlockEntity ctrl : controllers) {
-            LOGGER.debug("[Activate] -> sending activate to controller at {}", ctrl.getBlockPos());
+            LOGGER.info("[Activate] -> sending activate to controller at {} ownerUUID={}", ctrl.getBlockPos(), ctrl.getOwnerCommanderUUID());
             ctrl.applyFromCommander(filterData, true, worldPosition, commanderUUID);
         }
     }
@@ -298,7 +298,7 @@ public class CommanderBlockEntity extends BlockEntity implements MenuProvider {
         wasActive = false;
         setChanged();
         List<ControllerBlockEntity> controllers = findNearbyControllers();
-        LOGGER.debug("[Deactivate] Found {} controllers for commander at {}", controllers.size(), worldPosition);
+        LOGGER.info("[Deactivate] Found {} controllers for commander at {}", controllers.size(), worldPosition);
         for (ControllerBlockEntity ctrl : controllers) {
             ctrl.applyFromCommander(filterData, false, worldPosition, commanderUUID);
         }
@@ -307,7 +307,7 @@ public class CommanderBlockEntity extends BlockEntity implements MenuProvider {
     public void broadcastFilterUpdate() {
         if (level == null || level.isClientSide) return;
         List<ControllerBlockEntity> controllers = findNearbyControllers();
-        LOGGER.debug("[FilterUpdate] Found {} controllers, mask={}", controllers.size(), Integer.toBinaryString(filterData.getMask()));
+        LOGGER.info("[FilterUpdate] Found {} controllers, mask={}", controllers.size(), Integer.toBinaryString(filterData.getMask()));
         for (ControllerBlockEntity ctrl : controllers) {
             ctrl.applyFromCommander(filterData, ctrl.isActive(), worldPosition, commanderUUID);
         }
@@ -400,7 +400,7 @@ public class CommanderBlockEntity extends BlockEntity implements MenuProvider {
             LOGGER.debug("[Find] Contraption scan failed: {}", e.getMessage());
         }
 
-        LOGGER.debug("[Find] Registry-based search: found={} worldCenter={}", result.size(), worldCenter);
+        LOGGER.info("[Find] Registry-based search: found={} worldCenter={}", result.size(), worldCenter);
         return result;
     }
     /**
