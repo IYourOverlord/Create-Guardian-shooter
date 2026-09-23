@@ -60,6 +60,17 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     private static final int    TRANSFER_INTERVAL        = 10;
     private static final int    MIN_FIRE_COOLDOWN        = 20;
     private static final int    REQUIRED_ALIGNED_TICKS   = 3;
+    // Адаптивная надбавка к допуску наведения по манёвренным (быстро
+    // меняющим требуемый угол) целям. Пока цель бежит вокруг пушки — особенно
+    // на короткой дистанции, где та же линейная скорость даёт куда большую
+    // угловую скорость требуемого наведения — жёсткий фиксированный допуск
+    // (YAW_TOLERANCE/PITCH_TOLERANCE) почти никогда не выполняется одновременно
+    // REQUIRED_ALIGNED_TICKS тиков подряд: alignedTicks постоянно сбрасывается
+    // в 0, и орудие «наводится, но не стреляет» бесконечно. Расширяем допуск
+    // пропорционально скорости изменения wantedYaw/wantedPitch между тиками,
+    // ограничивая надбавку разумным потолком, чтобы не стрелять совсем мимо.
+    private static final double AIM_RATE_TOLERANCE_GAIN = 0.5;
+    private static final double AIM_RATE_TOLERANCE_MAX  = 4.0;
     private static final int    LOS_GRACE_TICKS_MAX      = 5;
     private static final int    SUBLEVEL_CACHE_INTERVAL  = 40;
     // LOS-проверка раз в N тиков вместо каждого тика — главное исправление лагов с Sable
@@ -67,13 +78,24 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
     // ── Yaw state (was YawBlockEntity) ───────────────────────────────────────
     private static final double YAW_DEADBAND_DEG    = 0.15;
-    private static final float  YAW_MAX_DEG_PER_TICK = 9.6f;
+    // Физический лимит скорости доворота ствола. Поднят с исходных 9.6°/тик:
+    // по диагностическим логам (см. [AimGate]) при близкой (2-5 блоков)
+    // спиральной цели требуемая угловая скорость wantedYaw доходила до
+    // 15-38°/тик — многократно выше старого лимита, из-за чего ствол
+    // безнадёжно отставал вне зависимости от качества упреждения/допусков
+    // (Traverse-Compensated Lead и адаптивный AIM_RATE_TOLERANCE не могут
+    // компенсировать чисто кинематическое ограничение). 24°/тик = полный
+    // оборот ствола за ~15 тиков (0.75 сек) — перекрывает типичный диапазон
+    // близких манёвров, оставаясь физически правдоподобным для CBC-пушки.
+    private static final float  YAW_MAX_DEG_PER_TICK = 24.0f;
     private float   targetYaw   = 0f;
     private boolean yawDirty    = false;
 
     // ── Pitch state (was PitchBlockEntity) ───────────────────────────────────
     private static final float PITCH_DEADBAND_DEG     = 0.1f;
-    private static final float PITCH_MAX_DEG_PER_TICK = 9.6f;
+    // См. пояснение у YAW_MAX_DEG_PER_TICK — тот же кинематический предел
+    // применяется симметрично к вертикальной оси наведения.
+    private static final float PITCH_MAX_DEG_PER_TICK = 24.0f;
     private float   targetPitch  = 0f;
     private boolean pitchDirty   = false;
 
@@ -175,6 +197,12 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     @Nullable private Vec3     entityAimCacheRelVel = null;
     private int                entityAimCacheAge    = 0;
 
+    // Предыдущие wanted-углы наведения — для оценки угловой скорости
+    // требуемого наведения (см. AIM_RATE_TOLERANCE_GAIN).
+    private boolean hasPrevWantedAim   = false;
+    private float   prevWantedYawE     = 0f;
+    private float   prevWantedPitchE   = 0f;
+
     // ── Сглаженная скорость цели (для упреждения) ───────────────────────────
     // target.getDeltaMovement() — «сырая» физическая скорость за последний тик.
     // Для мобов с pathfinding-ИИ она сильно шумит: трение (friction ×0.91 каждый
@@ -187,16 +215,28 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     // Экспоненциальное сглаживание (EMA) по фактическому смещению мировой
     // позиции цели между тиками даёт устойчивую оценку «среднего» вектора
     // движения по всем трём осям, на которую можно опираться для упреждения.
-    private static final double TARGET_VEL_EMA_ALPHA = 0.15;
-    @Nullable private UUID velTrackUUID    = null;
-    @Nullable private Vec3 velTrackLastPos = null;
+    // Двухступенчатое сглаживание вместо одиночной EMA:
+    // 1) Короткий кольцевой буфер позиций (POS_HISTORY_TICKS тиков) даёт
+    //    вектор среднего смещения за интервал — устойчив к шуму отдельного
+    //    тика (трение/шаги пути), но реагирует на изменение направления
+    //    быстрее, чем EMA с alpha=0.15 (та требовала ~15+ тиков на переход
+    //    к новому направлению, из-за чего при беге игрока зигзагом/по кругу
+    //    вектор упреждения почти всегда «смотрел» в устаревшую сторону).
+    // 2) Лёгкая EMA поверх этого буферного вектора убирает остаточное
+    //    дрожание кадр-к-кадру, не внося долгой инерции.
+    private static final int    POS_HISTORY_TICKS   = 6;
+    private static final double TARGET_VEL_EMA_ALPHA = 0.35;
+    @Nullable private UUID   velTrackUUID     = null;
+    private final       Vec3[] posHistory       = new Vec3[POS_HISTORY_TICKS];
+    private              int   posHistoryCount  = 0;
+    private              int   posHistoryHead   = 0;
     private        Vec3    smoothedTargetVel = Vec3.ZERO;
 
     /**
-     * Обновляет сглаженную (EMA) скорость цели по фактическому смещению её
-     * мировой позиции с прошлого тика. При смене цели или первом наблюдении
-     * сбрасывает сглаживание на «сырую» скорость (getDeltaMovement()), чтобы
-     * не тащить упреждение от предыдущей, уже не актуальной цели.
+     * Обновляет сглаженную скорость цели по кольцевому буферу её мировых
+     * позиций за последние POS_HISTORY_TICKS тиков, затем лёгкой EMA поверх
+     * полученного вектора. При смене цели буфер сбрасывается, чтобы не
+     * тащить упреждение от предыдущей, уже не актуальной цели.
      *
      * @param target        текущая цель (для UUID и fallback getDeltaMovement())
      * @param worldPos      актуальная МИРОВАЯ позиция цели в этом тике
@@ -205,20 +245,41 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
      */
     private Vec3 updateSmoothedTargetVelocity(Entity target, Vec3 worldPos) {
         UUID uuid = target.getUUID();
-        if (!uuid.equals(velTrackUUID) || velTrackLastPos == null) {
-            // Новая цель или первый тик наблюдения — нет истории для дельты
-            // позиции, стартуем с «сырой» скорости движка как разумного initial guess.
-            velTrackUUID      = uuid;
-            velTrackLastPos   = worldPos;
+        if (!uuid.equals(velTrackUUID)) {
+            // Новая цель — нет истории для дельты позиции, сбрасываем буфер
+            // и стартуем с «сырой» скорости движка как разумного initial guess.
+            velTrackUUID    = uuid;
+            posHistoryCount = 0;
+            posHistoryHead  = 0;
+            posHistory[0]   = worldPos;
+            posHistoryCount = 1;
+            posHistoryHead  = 1 % POS_HISTORY_TICKS;
             smoothedTargetVel = target.getDeltaMovement();
             return smoothedTargetVel;
         }
-        Vec3 rawDelta = worldPos.subtract(velTrackLastPos);
-        velTrackLastPos = worldPos;
+
+        posHistory[posHistoryHead] = worldPos;
+        posHistoryHead = (posHistoryHead + 1) % POS_HISTORY_TICKS;
+        if (posHistoryCount < POS_HISTORY_TICKS) posHistoryCount++;
+
+        Vec3 bufferVel;
+        if (posHistoryCount < 2) {
+            bufferVel = target.getDeltaMovement();
+        } else {
+            // Самая старая позиция в буфере — это индекс posHistoryHead при
+            // полном буфере, либо индекс 0 пока буфер ещё не заполнен.
+            int oldestIdx = (posHistoryCount < POS_HISTORY_TICKS)
+                    ? 0
+                    : posHistoryHead;
+            Vec3 oldest = posHistory[oldestIdx];
+            int span = posHistoryCount - 1;
+            bufferVel = worldPos.subtract(oldest).scale(1.0 / span);
+        }
+
         smoothedTargetVel = new Vec3(
-                smoothedTargetVel.x + (rawDelta.x - smoothedTargetVel.x) * TARGET_VEL_EMA_ALPHA,
-                smoothedTargetVel.y + (rawDelta.y - smoothedTargetVel.y) * TARGET_VEL_EMA_ALPHA,
-                smoothedTargetVel.z + (rawDelta.z - smoothedTargetVel.z) * TARGET_VEL_EMA_ALPHA);
+                smoothedTargetVel.x + (bufferVel.x - smoothedTargetVel.x) * TARGET_VEL_EMA_ALPHA,
+                smoothedTargetVel.y + (bufferVel.y - smoothedTargetVel.y) * TARGET_VEL_EMA_ALPHA,
+                smoothedTargetVel.z + (bufferVel.z - smoothedTargetVel.z) * TARGET_VEL_EMA_ALPHA);
         return smoothedTargetVel;
     }
 
@@ -598,8 +659,11 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         entityAimCacheAge    = 0;
         // Сбрасываем сглаженную скорость упреждения — она относилась к утраченной цели.
         velTrackUUID      = null;
-        velTrackLastPos   = null;
+        posHistoryCount   = 0;
+        posHistoryHead    = 0;
         smoothedTargetVel = Vec3.ZERO;
+        // Сбрасываем оценку угловой скорости наведения — она относилась к утраченной цели.
+        hasPrevWantedAim = false;
     }
 
     // ── Scanning ──────────────────────────────────────────────────────────────
@@ -725,6 +789,11 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         alignedTicks      = 0;
         losGraceTicks     = 0;
         doCancelFire();
+        velTrackUUID      = null;
+        posHistoryCount   = 0;
+        posHistoryHead    = 0;
+        smoothedTargetVel = Vec3.ZERO;
+        hasPrevWantedAim  = false;
         scanForCommanderTargets(scanLevel, mainLevel, worldCenter, muzzle);
     }
 
@@ -881,20 +950,34 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 || targetPos.distanceToSqr(entityAimCacheTarget) / distSqToTargetE > AIM_CACHE_POS_THRESHOLD_SQ
                 || relVel.subtract(entityAimCacheRelVel).lengthSqr() > AIM_CACHE_VEL_THRESHOLD_SQ;
 
+        float sgn          = getContraptionSign(mount);
+        float currentPitch = c.pitch * sgn;
+
         if (needRecalc) {
             // Use world-space pitch limits: for inverted cannons (sgn=-1) depression
             // and elevation are physically swapped relative to world space.
-            float sgnE = getContraptionSign(mount);
-            entityAimCache       = BallisticSolver.solve(muzzle, targetPos, relVel,
+            // Traverse-Compensated Lead: сдвигаем точку прицеливания вперёд на
+            // оценочное время доворота ствола до предыдущей аим-точки — см.
+            // estimateTraverseTicks(). Используем relVel (уже сглаженную
+            // скорость цели относительно платформы) как экстраполятор:
+            // targetPos смещается так, будто цель продолжит двигаться с той
+            // же скоростью ещё traverseTicks тиков сверху обычного упреждения
+            // по времени полёта, которое считает сам BallisticSolver.
+            double traverseTicks = estimateTraverseTicks(c.yaw, currentPitch,
+                    prevWantedYawE, prevWantedPitchE, hasPrevWantedAim);
+            Vec3 traverseAdjustedTarget = traverseTicks > 0.0
+                    ? targetPos.add(relVel.scale(traverseTicks))
+                    : targetPos;
+            entityAimCache       = BallisticSolver.solve(muzzle, traverseAdjustedTarget, relVel,
                     CBCAutoTargetConfig.MUZZLE_SPEED_BLOCKS_PER_TICK.get(),
                     CBCAutoTargetConfig.DEFAULT_GRAVITY.get(),
                     CBCAutoTargetConfig.DEFAULT_DRAG.get(),
-                    false, worldMaxDepression(c, sgnE), worldMaxElevation(c, sgnE));
+                    false, worldMaxDepression(c, sgn), worldMaxElevation(c, sgn));
             entityAimCacheMuzzle = muzzle;
             entityAimCacheTarget = targetPos;
             entityAimCacheRelVel = relVel;
             entityAimCacheAge    = 0;
-            LOGGER.debug("[AimCache] entity recalc at {}", worldPosition);
+            LOGGER.debug("[AimCache] entity recalc at {} traverseTicks={}", worldPosition, traverseTicks);
         }
         double[] aim = entityAimCache;
         // ─────────────────────────────────────────────────────────────────────
@@ -905,21 +988,43 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
         applyAim(level, wantedYaw, wantedPitch);
 
-        float   sgn          = getContraptionSign(mount);
-        float   currentPitch = c.pitch * sgn;
         // Заблокированная ось (allowHorizontal/allowVertical = false) физически
         // не может довернуться до wantedYaw/wantedPitch, поэтому сравнивать
         // "желаемый" угол с фактическим для неё бессмысленно — она никогда не
         // станет "ok" и просто заблокирует стрельбу навсегда. Для заблокированной
         // оси условие готовности считается выполненным автоматически: стреляем
         // с тем углом, который уже есть.
+        // Угловая скорость требуемого наведения между тиками — чем быстрее
+        // меняется wantedYaw/wantedPitch (манёвренная близкая цель), тем
+        // шире допуск, иначе alignedTicks никогда не наберёт REQUIRED_ALIGNED_TICKS
+        // подряд и орудие не выстрелит, пока цель не остановится.
+        double yawTolExtra = 0, pitchTolExtra = 0;
+        if (hasPrevWantedAim) {
+            double yawRate   = Math.abs(angleDiff(wantedYaw, prevWantedYawE));
+            double pitchRate = Math.abs(wantedPitch - prevWantedPitchE);
+            yawTolExtra   = Math.min(yawRate   * AIM_RATE_TOLERANCE_GAIN, AIM_RATE_TOLERANCE_MAX);
+            pitchTolExtra = Math.min(pitchRate * AIM_RATE_TOLERANCE_GAIN, AIM_RATE_TOLERANCE_MAX);
+        }
+        prevWantedYawE   = wantedYaw;
+        prevWantedPitchE = wantedPitch;
+        hasPrevWantedAim = true;
+
         boolean yawOk   = !allowHorizontal
-                || Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE;
+                || Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE + yawTolExtra;
         boolean pitchOk = !allowVertical
-                || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE;
+                || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE + pitchTolExtra;
 
         if (fireCooldown > 0) fireCooldown--;
         alignedTicks = (yawOk && pitchOk) ? alignedTicks + 1 : 0;
+
+        LOGGER.debug("[AimGate] entity pos={} wantedYaw={} curYaw={} yawDiff={} yawTol={} yawOk={} " +
+                        "wantedPitch={} curPitch={} pitchDiff={} pitchTol={} pitchOk={} alignedTicks={} " +
+                        "fireCooldown={} confirmTicks={}",
+                worldPosition, wantedYaw, c.yaw, angleDiff(wantedYaw, c.yaw),
+                BallisticSolver.YAW_TOLERANCE + yawTolExtra, yawOk,
+                wantedPitch, currentPitch, wantedPitch - currentPitch,
+                BallisticSolver.PITCH_TOLERANCE + pitchTolExtra, pitchOk,
+                alignedTicks, fireCooldown, confirmTicks);
 
         if (yawOk && pitchOk && alignedTicks >= REQUIRED_ALIGNED_TICKS
                 && fireCooldown == 0 && confirmTicks >= 1) {
@@ -1077,7 +1182,49 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         }
     }
 
-    // ── Cannon helpers ────────────────────────────────────────────────────────
+    // ── Traverse-Compensated Lead (компенсация времени доворота ствола) ────────
+    // Физический предел скорости поворота ствола (YAW_MAX_DEG_PER_TICK/
+    // PITCH_MAX_DEG_PER_TICK) — жёсткая кинематическая граница, которую
+    // никаким сглаживанием скорости цели не обойти: при достаточно быстром
+    // угловом движении цели относительно пушки (например, цель бежит по
+    // спирали и сближается) требуемая скорость доворота начинает превышать
+    // физический лимит ствола, и пушка гарантированно отстаёт от расчётной
+    // точки упреждения, пока не собьётся дистанция/угловая скорость.
+    //
+    // BallisticSolver.solve() уже даёт упреждение по времени ПОЛЁТА снаряда,
+    // но целится в точку "как если бы ствол телепортировался туда мгновенно".
+    // Добавляем вторую фазу упреждения: перед расчётом баллистики сдвигаем
+    // точку прицеливания вперёд по времени ДОВОРОТА ствола от текущего угла
+    // до предыдущей расчётной точки — так пушка целится не в то, "где цель
+    // сейчас плюс время полёта", а в то, "где цель будет к моменту, когда
+    // ствол физически туда довернётся, плюс время полёта". Это позволяет
+    // стволу "срезать" траекторию упреждения вместо бесконечной погони за
+    // постоянно убегающей целью.
+    //
+    // Оценка времени доворота: угловое расстояние от текущего yaw/pitch
+    // ствола до предыдущей аим-точки, делённое на физический лимит град/тик.
+    // Берём максимум по осям (обе оси доворачиваются параллельно, финиш —
+    // по более медленной). Ограничиваем сверху TRAVERSE_LEAD_MAX_TICKS,
+    // чтобы при потере цели/резкой смене угла не улететь предсказанием в
+    // бесконечность.
+    private static final int TRAVERSE_LEAD_MAX_TICKS = 40;
+
+    /**
+     * Оценивает время доворота ствола (в тиках) от текущего мирового угла
+     * наведения до последней расчётной wanted-точки.
+     */
+    private static double estimateTraverseTicks(float currentYaw, float currentPitch,
+                                                float prevWantedYaw, float prevWantedPitch,
+                                                boolean hasPrev) {
+        if (!hasPrev) return 0.0;
+        double yawDist   = Math.abs(angleDiff(prevWantedYaw, currentYaw));
+        double pitchDist = Math.abs(prevWantedPitch - currentPitch);
+        double yawTicks   = yawDist   / YAW_MAX_DEG_PER_TICK;
+        double pitchTicks = pitchDist / PITCH_MAX_DEG_PER_TICK;
+        return Math.min(Math.max(yawTicks, pitchTicks), TRAVERSE_LEAD_MAX_TICKS);
+    }
+
+
     /**
      * Знак конвертации между "raw" pitch контрапшена (c.pitch, хранится в
      * PitchOrientedContraptionEntity) и "логическим"/мировым pitch, которым
