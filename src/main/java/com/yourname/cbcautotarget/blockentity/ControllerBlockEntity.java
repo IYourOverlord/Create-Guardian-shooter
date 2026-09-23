@@ -147,9 +147,22 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     // Кэш результата BallisticSolver: пересчитывается только когда позиция ствола
     // или цели сместилась более чем на порог, или истёк принудительный интервал.
     // Отдельные кэши для entity-цели и commander-цели — у них разная природа движения.
+    //
+    // ВАЖНО: порог инвалидации сравнивается не с абсолютным смещением в блоках²,
+    // а со смещением, НОРМИРОВАННЫМ на квадрат дистанции до цели (относительное
+    // угловое смещение). Абсолютный порог в блоках приводил к тому, что для
+    // близких целей то же самое (или даже меньшее) угловое изменение требуемого
+    // yaw/pitch пересекало порог гораздо чаще, чем для далёких — кэш
+    // пересчитывался почти каждый тик, wantedYaw/wantedPitch «дёргались»
+    // быстрее, чем ствол физически успевал довернуться (ограничен
+    // YAW_MAX_DEG_PER_TICK/PITCH_MAX_DEG_PER_TICK), alignedTicks не успевал
+    // набрать REQUIRED_ALIGNED_TICKS подряд — orudие «зависало» и стреляло
+    // заметно реже именно по близким целям, хотя видимо не должно.
+    // Нормировка на distanceToSqr(muzzle, target) делает порог одинаковым
+    // в угловых единицах независимо от дистанции.
 
-    /** Порог смещения ствола или цели (в блоках²), при котором кэш инвалидируется. */
-    private static final double AIM_CACHE_POS_THRESHOLD_SQ  = 0.01; // ~0.1 блока
+    /** Относительный порог смещения (смещение²/дистанция² до цели), при котором кэш инвалидируется. */
+    private static final double AIM_CACHE_POS_THRESHOLD_SQ  = 0.0004; // ~2% дистанции
     /** Порог изменения относительной скорости цели (блоков/тик)², при котором кэш инвалидируется. */
     private static final double AIM_CACHE_VEL_THRESHOLD_SQ  = 0.001;
     /** Принудительный пересчёт раз в N тиков, даже если входные данные не изменились. */
@@ -162,10 +175,58 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     @Nullable private Vec3     entityAimCacheRelVel = null;
     private int                entityAimCacheAge    = 0;
 
+    // ── Сглаженная скорость цели (для упреждения) ───────────────────────────
+    // target.getDeltaMovement() — «сырая» физическая скорость за последний тик.
+    // Для мобов с pathfinding-ИИ она сильно шумит: трение (friction ×0.91 каждый
+    // тик), ступенчатое движение по узлам пути, шаги вверх/вниз по рельефу —
+    // всё это даёт скачущее от тика к тику значение, часто близкое к нулю даже
+    // когда цель устойчиво движется в одном направлении. BallisticSolver.solve()
+    // считает точку упреждения как targetPos + targetVel*T — с шумной скоростью
+    // T получается почти нулевым смещением, и орудие вместо упреждения просто
+    // «тащится» за текущей позицией цели (visually — «догоняет, но не обгоняет»).
+    // Экспоненциальное сглаживание (EMA) по фактическому смещению мировой
+    // позиции цели между тиками даёт устойчивую оценку «среднего» вектора
+    // движения по всем трём осям, на которую можно опираться для упреждения.
+    private static final double TARGET_VEL_EMA_ALPHA = 0.15;
+    @Nullable private UUID velTrackUUID    = null;
+    @Nullable private Vec3 velTrackLastPos = null;
+    private        Vec3    smoothedTargetVel = Vec3.ZERO;
+
+    /**
+     * Обновляет сглаженную (EMA) скорость цели по фактическому смещению её
+     * мировой позиции с прошлого тика. При смене цели или первом наблюдении
+     * сбрасывает сглаживание на «сырую» скорость (getDeltaMovement()), чтобы
+     * не тащить упреждение от предыдущей, уже не актуальной цели.
+     *
+     * @param target        текущая цель (для UUID и fallback getDeltaMovement())
+     * @param worldPos      актуальная МИРОВАЯ позиция цели в этом тике
+     *                      (для sublevel-целей — уже сконвертированная)
+     * @return сглаженный вектор скорости цели, блоков/тик, в мировых координатах
+     */
+    private Vec3 updateSmoothedTargetVelocity(Entity target, Vec3 worldPos) {
+        UUID uuid = target.getUUID();
+        if (!uuid.equals(velTrackUUID) || velTrackLastPos == null) {
+            // Новая цель или первый тик наблюдения — нет истории для дельты
+            // позиции, стартуем с «сырой» скорости движка как разумного initial guess.
+            velTrackUUID      = uuid;
+            velTrackLastPos   = worldPos;
+            smoothedTargetVel = target.getDeltaMovement();
+            return smoothedTargetVel;
+        }
+        Vec3 rawDelta = worldPos.subtract(velTrackLastPos);
+        velTrackLastPos = worldPos;
+        smoothedTargetVel = new Vec3(
+                smoothedTargetVel.x + (rawDelta.x - smoothedTargetVel.x) * TARGET_VEL_EMA_ALPHA,
+                smoothedTargetVel.y + (rawDelta.y - smoothedTargetVel.y) * TARGET_VEL_EMA_ALPHA,
+                smoothedTargetVel.z + (rawDelta.z - smoothedTargetVel.z) * TARGET_VEL_EMA_ALPHA);
+        return smoothedTargetVel;
+    }
+
     // Кэш для aimAndFireAtCommander
     // Командер не движется сам по себе, но может быть на корабле Sable — порог чуть мягче.
+    // См. пояснение выше: тот же относительный (не абсолютный) порог по дистанции.
     private static final int    CMD_AIM_CACHE_MAX_AGE          = 10; // обновляем реже — цель статична
-    private static final double CMD_AIM_CACHE_POS_THRESHOLD_SQ = 0.25; // ~0.5 блока (для движущегося корабля)
+    private static final double CMD_AIM_CACHE_POS_THRESHOLD_SQ = 0.0009; // ~3% дистанции
     @Nullable private double[] cmdAimCache       = null;
     @Nullable private Vec3     cmdAimCacheMuzzle = null;
     @Nullable private Vec3     cmdAimCacheTarget = null;
@@ -239,7 +300,21 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         // выполняет матричное преобразование (SableCompat.toWorldPos), поэтому
         // не пересчитываем их повторно в tracking/scan/fire-LOS.
         Vec3 tickWorldCenter = getControllerWorldPos();
-        Vec3 tickMuzzlePos   = getMuzzleWorldPos();
+        // ВАЖНО: для LOS-проверок (скан и per-tick трекинг) нужна РЕАЛЬНАЯ позиция
+        // дула с учётом длины ствола и текущего pitch/yaw контраптиона, а не грубая
+        // аппроксимация getMuzzleWorldPos() (mount ± 1 блок по вертикали). Грубая
+        // точка часто оказывается внутри/вплотную к корпусу самого орудия, из-за
+        // чего raycast сразу упирается в собственные блоки пушки и LOS всегда false,
+        // даже когда цель реально видна. aimAndFireAtEntity/aimAndFireAtCommander уже
+        // считали точную точку через computeRealMuzzlePos — теперь считаем её здесь
+        // же и переиспользуем везде, где раньше использовался грубый tickMuzzlePos.
+        Vec3 tickMuzzlePos = getMuzzleWorldPos();
+        {
+            PitchOrientedContraptionEntity pc = mount.getContraption();
+            if (pc != null && pc.getContraption() instanceof AbstractMountedCannonContraption) {
+                tickMuzzlePos = computeRealMuzzlePos(pc);
+            }
+        }
 
         // ── Inlined Yaw tick ─────────────────────────────────────────────────
         if (yawDirty) tickYaw(mount);
@@ -521,6 +596,10 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         entityAimCacheTarget = null;
         entityAimCacheRelVel = null;
         entityAimCacheAge    = 0;
+        // Сбрасываем сглаженную скорость упреждения — она относилась к утраченной цели.
+        velTrackUUID      = null;
+        velTrackLastPos   = null;
+        smoothedTargetVel = Vec3.ZERO;
     }
 
     // ── Scanning ──────────────────────────────────────────────────────────────
@@ -572,7 +651,13 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             boolean los = (controllerSubLevel != null)
                     ? LineOfSightUtil.hasLineOfSightToEntityFromSubLevel(controllerSubLevel, muzzle, candidate)
                     : LineOfSightUtil.hasLineOfSightToEntity(mainLevel, muzzle, candidate);
+            LOGGER.info("[Scan] {} LOS-check {} muzzle={} target={} subLevel={} los={}",
+                    worldPosition, candidate.getClass().getSimpleName(), muzzle, candidate.position(),
+                    controllerSubLevel != null, los);
             if (los) { chosen = candidate; break; }
+        }
+        if (chosen == null && !toCheck.isEmpty()) {
+            LOGGER.info("[Scan] {} no candidate passed LOS out of {} checked", worldPosition, toCheck.size());
         }
 
         // Если в главном мире цель не найдена — ищем на sublevel-кораблях.
@@ -751,8 +836,14 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         Vec3 platVel = getPlatformVelocity();
         // Для sublevel-цели getDeltaMovement() — скорость в локальной системе корабля.
         // Трансформируем в мировую (только вращение, без трансляции — это velocity).
-        Vec3 targetVel = target.getDeltaMovement();
+        // Используем сглаженную (EMA) скорость по фактическому смещению мировой
+        // позиции цели вместо «сырой» target.getDeltaMovement() — см. пояснение
+        // у updateSmoothedTargetVelocity(): сырая скорость слишком шумит для
+        // устойчивого упреждения, из-за чего орудие фактически не опережало цель.
+        Vec3 targetVel;
         if (currentTargetOnSubLevel && SableCompat.isAvailable()) {
+            Vec3 rawLocalVel = target.getDeltaMovement();
+            targetVel = rawLocalVel; // fallback, перезаписывается ниже если resolved
             ServerLevel ml = mainLevel(level);
             if (ml != null) {
                 for (var _entry : SableCompat.findLivingEntitiesInAllSubLevels(
@@ -760,11 +851,17 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                         _e -> _e.getUUID().equals(currentTargetUUID))) {
                     // Скорость корабля в мировых координатах + локальная скорость entity
                     Vec3 shipVel = SableCompat.getShipVelocity(_entry.subLevel());
-                    Vec3 wVel    = SableCompat.toWorldVelocity(_entry.subLevel(), targetVel);
+                    Vec3 wVel    = SableCompat.toWorldVelocity(_entry.subLevel(), rawLocalVel);
                     targetVel = wVel.add(shipVel);
                     break;
                 }
             }
+            // Для sublevel-целей сглаживание по мировой позиции ненадёжно (позиция
+            // корабля сама постоянно меняется независимо от движения моба внутри
+            // него), поэтому используем raw-скорость как есть — она уже не шумит
+            // так сильно, потому что домножена на скорость корабля.
+        } else {
+            targetVel = updateSmoothedTargetVelocity(target, targetPos);
         }
         Vec3 relVel  = new Vec3(
                 targetVel.x - platVel.x,
@@ -774,10 +871,14 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         // ── Ballistic cache ───────────────────────────────────────────────────
         // Пересчёт только если ствол или цель сместились, скорость изменилась,
         // или истёк принудительный интервал обновления.
+        // Порог сравнивается с квадратом дистанции до цели (см. пояснение у
+        // AIM_CACHE_POS_THRESHOLD_SQ) — иначе близкие цели пересчитывают кэш
+        // намного чаще дальних при одинаковом абсолютном смещении в блоках.
+        double distSqToTargetE = Math.max(muzzle.distanceToSqr(targetPos), 1.0);
         boolean needRecalc = entityAimCache == null
                 || ++entityAimCacheAge >= AIM_CACHE_MAX_AGE
-                || muzzle.distanceToSqr(entityAimCacheMuzzle) > AIM_CACHE_POS_THRESHOLD_SQ
-                || targetPos.distanceToSqr(entityAimCacheTarget) > AIM_CACHE_POS_THRESHOLD_SQ
+                || muzzle.distanceToSqr(entityAimCacheMuzzle) / distSqToTargetE > AIM_CACHE_POS_THRESHOLD_SQ
+                || targetPos.distanceToSqr(entityAimCacheTarget) / distSqToTargetE > AIM_CACHE_POS_THRESHOLD_SQ
                 || relVel.subtract(entityAimCacheRelVel).lengthSqr() > AIM_CACHE_VEL_THRESHOLD_SQ;
 
         if (needRecalc) {
@@ -933,8 +1034,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         // Инвалидация по порогу позиции нужна если командер на корабле Sable.
         boolean needRecalc = cmdAimCache == null
                 || ++cmdAimCacheAge >= CMD_AIM_CACHE_MAX_AGE
-                || muzzle.distanceToSqr(cmdAimCacheMuzzle) > CMD_AIM_CACHE_POS_THRESHOLD_SQ
-                || targetPos.distanceToSqr(cmdAimCacheTarget) > CMD_AIM_CACHE_POS_THRESHOLD_SQ;
+                || muzzle.distanceToSqr(cmdAimCacheMuzzle) / Math.max(muzzle.distanceToSqr(targetPos), 1.0) > CMD_AIM_CACHE_POS_THRESHOLD_SQ
+                || targetPos.distanceToSqr(cmdAimCacheTarget) / Math.max(muzzle.distanceToSqr(targetPos), 1.0) > CMD_AIM_CACHE_POS_THRESHOLD_SQ;
 
         if (needRecalc) {
             // Same world-space limit correction for commander targets.

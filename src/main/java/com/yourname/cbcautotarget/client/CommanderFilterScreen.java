@@ -30,6 +30,7 @@ public class CommanderFilterScreen extends Screen {
     private static final int TITLE_CLR = 0xFFFFFF;
 
     private final Screen           parent;
+    private final CommanderMenu    menu;
     private final BlockPos         commanderPos;
     private final TargetFilterData filterData;
     private int                    localMask;
@@ -41,9 +42,15 @@ public class CommanderFilterScreen extends Screen {
     public CommanderFilterScreen(Screen parent, CommanderMenu menu, int initialMask) {
         super(Component.translatable("gui.cbc_autotarget.filter.title"));
         this.parent       = parent;
+        this.menu         = menu;
         this.commanderPos = menu.getBlockEntity().getBlockPos();
         this.filterData   = menu.getBlockEntity().getFilterData();
-        this.localMask    = initialMask;
+        // Берём актуальную маску из ContainerData меню (синхронизируется сервером
+        // каждый тик), а не только переданный снимок на момент открытия кнопки —
+        // иначе если сервер уже поменял маску (например, при активации), экран
+        // покажет и, что хуже, при следующем тоггле отправит устаревшее состояние,
+        // откатывая маску назад.
+        this.localMask    = menu.getFilterMask();
     }
 
     private int panelHeight() {
@@ -137,9 +144,31 @@ public class CommanderFilterScreen extends Screen {
 
     @Override
     public void render(GuiGraphics g, int mx, int my, float pt) {
+        syncMaskFromServer();
         renderBackground(g, mx, my, pt);
         drawPanel(g);
         super.render(g, mx, my, pt);
+    }
+
+    /**
+     * Подтягивает актуальную маску из ContainerData меню (обновляется сервером
+     * каждый тик через addDataSlots). Если маска изменилась снаружи (сервер
+     * прислал новое значение, например из-за активации командера или другого
+     * игрока), обновляем localMask и чекбоксы, чтобы следующий клик не отправил
+     * устаревшее состояние поверх актуального.
+     */
+    private void syncMaskFromServer() {
+        int serverMask = menu.getFilterMask();
+        if (serverMask == localMask) return;
+        localMask = serverMask;
+        for (int i = 0; i < checkboxes.size(); i++) {
+            TargetCategory cat = categories.get(i);
+            boolean shouldBeSelected = (localMask & cat.mask()) != 0;
+            if (checkboxes.get(i).selected() != shouldBeSelected) {
+                checkboxes.get(i).onPress();
+            }
+        }
+        updateWhitelistBtn();
     }
 
     private void drawPanel(GuiGraphics g) {
