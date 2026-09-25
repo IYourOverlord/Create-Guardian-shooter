@@ -56,41 +56,42 @@ public class CannonMountOverlayRenderer implements BlockEntityRenderer<Controlle
         if (!state.hasProperty(ControllerBlock.ACTIVE)) return;
         if (!state.getValue(ControllerBlock.ACTIVE)) return;
 
-        BlockPos mountPos = be.getCannonMountPos();
-        if (mountPos == null) return;
-
-        // PoseStack здесь уже позиционирован движком в начало блока Controller.
-        // Смещаем к позиции CannonMount относительно Controller.
-        BlockPos ctrlPos = be.getBlockPos();
-        int dx = mountPos.getX() - ctrlPos.getX();
-        int dy = mountPos.getY() - ctrlPos.getY();
-        int dz = mountPos.getZ() - ctrlPos.getZ();
+        List<BlockPos> mountPositions = be.getCannonMountPos();
+        if (mountPositions.isEmpty()) return;
 
         BlockState prismarine = Blocks.DARK_PRISMARINE.defaultBlockState();
         BakedModel model = Minecraft.getInstance().getBlockRenderer().getBlockModel(prismarine);
-
-        ps.pushPose();
-        ps.translate(dx + OFFSET, dy + OFFSET, dz + OFFSET);
-        ps.scale(SCALE, SCALE, SCALE);
-
         VertexConsumer buf = buffers.getBuffer(RenderType.solid());
-        PoseStack.Pose pose = ps.last();
+        BlockPos ctrlPos = be.getBlockPos();
 
-        for (Direction dir : DIRS) {
-            RAND.setSeed(42L);
-            List<BakedQuad> quads = model.getQuads(
-                    prismarine, dir, RAND, ModelData.EMPTY, RenderType.solid());
-            for (BakedQuad quad : quads) {
-                buf.putBulkData(
-                        pose, quad,
-                        1.0f, 1.0f, 1.0f, 1.0f,
-                        LightTexture.FULL_BRIGHT,
-                        OverlayTexture.NO_OVERLAY
-                );
+        // Рендерим оверлей на КАЖДОМ привязанном mount'е — их теперь может
+        // быть несколько (пушки на разных гранях блока).
+        for (BlockPos mountPos : mountPositions) {
+            int dx = mountPos.getX() - ctrlPos.getX();
+            int dy = mountPos.getY() - ctrlPos.getY();
+            int dz = mountPos.getZ() - ctrlPos.getZ();
+
+            ps.pushPose();
+            ps.translate(dx + OFFSET, dy + OFFSET, dz + OFFSET);
+            ps.scale(SCALE, SCALE, SCALE);
+
+            PoseStack.Pose pose = ps.last();
+            for (Direction dir : DIRS) {
+                RAND.setSeed(42L);
+                List<BakedQuad> quads = model.getQuads(
+                        prismarine, dir, RAND, ModelData.EMPTY, RenderType.solid());
+                for (BakedQuad quad : quads) {
+                    buf.putBulkData(
+                            pose, quad,
+                            1.0f, 1.0f, 1.0f, 1.0f,
+                            LightTexture.FULL_BRIGHT,
+                            OverlayTexture.NO_OVERLAY
+                    );
+                }
             }
-        }
 
-        ps.popPose();
+            ps.popPose();
+        }
     }
 
     @Override
