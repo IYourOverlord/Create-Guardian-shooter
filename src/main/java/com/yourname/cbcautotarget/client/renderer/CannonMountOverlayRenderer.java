@@ -13,7 +13,6 @@ import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.client.resources.model.BakedModel;
-import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.Blocks;
@@ -23,7 +22,10 @@ import net.neoforged.neoforge.client.model.data.ModelData;
 import java.util.List;
 
 /**
- * Рендерит куб dark_prismarine (scale 1.02) поверх CannonMount когда Controller активен.
+ * Рендерит куб dark_prismarine (scale 1.02) поверх самого блока Controller,
+ * когда он активен. Раньше подсвечивался отдельный блок CannonMount, к
+ * которому крепилась пушка — теперь Controller сам собирает и хранит пушку
+ * (нет отдельного блока-крепления), поэтому подсвечивается сам Controller.
  *
  * Использует BlockEntityRenderer вместо RenderLevelStageEvent — движок сам
  * позиционирует PoseStack относительно позиции блока с правильным partialTick,
@@ -56,47 +58,37 @@ public class CannonMountOverlayRenderer implements BlockEntityRenderer<Controlle
         if (!state.hasProperty(ControllerBlock.ACTIVE)) return;
         if (!state.getValue(ControllerBlock.ACTIVE)) return;
 
-        List<BlockPos> mountPositions = be.getCannonMountPos();
-        if (mountPositions.isEmpty()) return;
-
         BlockState prismarine = Blocks.DARK_PRISMARINE.defaultBlockState();
         BakedModel model = Minecraft.getInstance().getBlockRenderer().getBlockModel(prismarine);
         VertexConsumer buf = buffers.getBuffer(RenderType.solid());
-        BlockPos ctrlPos = be.getBlockPos();
 
-        // Рендерим оверлей на КАЖДОМ привязанном mount'е — их теперь может
-        // быть несколько (пушки на разных гранях блока).
-        for (BlockPos mountPos : mountPositions) {
-            int dx = mountPos.getX() - ctrlPos.getX();
-            int dy = mountPos.getY() - ctrlPos.getY();
-            int dz = mountPos.getZ() - ctrlPos.getZ();
+        // PoseStack уже позиционирован движком на блок Controller — рендерим
+        // подсветку прямо здесь, без смещения на соседний блок.
+        ps.pushPose();
+        ps.translate(OFFSET, OFFSET, OFFSET);
+        ps.scale(SCALE, SCALE, SCALE);
 
-            ps.pushPose();
-            ps.translate(dx + OFFSET, dy + OFFSET, dz + OFFSET);
-            ps.scale(SCALE, SCALE, SCALE);
-
-            PoseStack.Pose pose = ps.last();
-            for (Direction dir : DIRS) {
-                RAND.setSeed(42L);
-                List<BakedQuad> quads = model.getQuads(
-                        prismarine, dir, RAND, ModelData.EMPTY, RenderType.solid());
-                for (BakedQuad quad : quads) {
-                    buf.putBulkData(
-                            pose, quad,
-                            1.0f, 1.0f, 1.0f, 1.0f,
-                            LightTexture.FULL_BRIGHT,
-                            OverlayTexture.NO_OVERLAY
-                    );
-                }
+        PoseStack.Pose pose = ps.last();
+        for (Direction dir : DIRS) {
+            RAND.setSeed(42L);
+            List<BakedQuad> quads = model.getQuads(
+                    prismarine, dir, RAND, ModelData.EMPTY, RenderType.solid());
+            for (BakedQuad quad : quads) {
+                buf.putBulkData(
+                        pose, quad,
+                        1.0f, 1.0f, 1.0f, 1.0f,
+                        LightTexture.FULL_BRIGHT,
+                        OverlayTexture.NO_OVERLAY
+                );
             }
-
-            ps.popPose();
         }
+
+        ps.popPose();
     }
 
     @Override
     public boolean shouldRenderOffScreen(ControllerBlockEntity be) {
-        // Рендерим даже когда Controller вне экрана — CannonMount может быть виден.
+        // Рендерим даже когда Controller вне экрана — оверлей может быть виден.
         return true;
     }
 }

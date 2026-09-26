@@ -37,24 +37,24 @@ import net.neoforged.neoforge.items.IItemHandler;
 import net.neoforged.neoforge.items.ItemStackHandler;
 import net.neoforged.neoforge.network.PacketDistributor;
 import rbasamoyai.createbigcannons.cannon_control.ControlPitchContraption;
-import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockEntity;
 import rbasamoyai.createbigcannons.cannon_control.contraption.AbstractMountedCannonContraption;
 import rbasamoyai.createbigcannons.cannon_control.contraption.MountedBigCannonContraption;
 import rbasamoyai.createbigcannons.cannon_control.contraption.PitchOrientedContraptionEntity;
+import rbasamoyai.createbigcannons.cannons.CannonContraptionProviderBlock;
+import com.simibubi.create.AllSoundEvents;
+import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
+import com.simibubi.create.content.contraptions.AssemblyException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Iterator;
 import java.util.List;
 import java.util.UUID;
 
-public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
+public class ControllerBlockEntity extends BlockEntity implements MenuProvider, ControlPitchContraption.Block {
 
-    private static final java.util.concurrent.ConcurrentHashMap<Long, BlockPos> MOUNT_OWNER_REGISTRY =
-            new java.util.concurrent.ConcurrentHashMap<>();
 
     public  static final double PITCH_TOLERANCE         = 1.0;
     private static final int    INVENTORY_SIZE           = 27;
@@ -89,17 +89,14 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     // оборот ствола за ~15 тиков (0.75 сек) — перекрывает типичный диапазон
     // близких манёвров, оставаясь физически правдоподобным для CBC-пушки.
     private static final float  YAW_MAX_DEG_PER_TICK = 24.0f;
-    // Per-mount: MountState.targetYaw/yawDirty.
 
     // ── Pitch state (was PitchBlockEntity) ───────────────────────────────────
     private static final float PITCH_DEADBAND_DEG     = 0.1f;
     // См. пояснение у YAW_MAX_DEG_PER_TICK — тот же кинематический предел
     // применяется симметрично к вертикальной оси наведения.
     private static final float PITCH_MAX_DEG_PER_TICK = 24.0f;
-    // Per-mount: MountState.targetPitch/pitchDirty.
 
     // ── Fire state (was FireBlockEntity) ─────────────────────────────────────
-    // Per-mount: MountState.fireRequested/cancelRequested.
 
     // ── Rotation axis permissions ─────────────────────────────────────────────
     /** Разрешено ли горизонтальное вращение (yaw). По умолчанию включено. */
@@ -123,48 +120,43 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     private static final double FIRE_FREQUENCY_RADIUS    = 5.0;
     private static final double FIRE_FREQUENCY_RADIUS_SQ = FIRE_FREQUENCY_RADIUS * FIRE_FREQUENCY_RADIUS;
 
-    // broadcastFireRequested теперь per-mount — см. MountState (каждая пушка
-    // блока откликается на синхронный сигнал огня независимо).
-
     // ── General state ─────────────────────────────────────────────────────────
     private boolean active         = false;
-    // fireCooldown/alignedTicks теперь per-mount — см. MountState.
+    private int     fireCooldown   = 0;
+    private int     alignedTicks   = 0;
 
-    /**
-     * Состояние наведения/стрельбы одной прикреплённой пушки. Каждый mount
-     * стоит в своей точке (другая грань блока контроллера), поэтому у
-     * каждого — свой ствол, свой wantedYaw/Pitch и свой баллистический
-     * кэш, посчитанный от ЕГО дула до общей точки цели. Общие для всех
-     * mount'ов остаются currentTargetUUID/filterData/commanderTargetPos —
-     * цель выбирается один раз на блок.
-     */
-    private static final class MountState {
-        final BlockPos pos;
-        float   targetYaw, targetPitch;
-        boolean yawDirty, pitchDirty;
-        boolean fireRequested, cancelRequested, broadcastFireRequested;
-        int     fireCooldown;
-        int     alignedTicks;
-        boolean hasPrevWantedAim;
-        float   prevWantedYaw, prevWantedPitch;
-        @Nullable double[] entityAimCache;
-        @Nullable Vec3     entityAimCacheMuzzle, entityAimCacheTarget, entityAimCacheRelVel;
-        int     entityAimCacheAge;
-        @Nullable double[] cmdAimCache;
-        @Nullable Vec3     cmdAimCacheMuzzle, cmdAimCacheTarget;
-        int     cmdAimCacheAge;
+    // ── Наведение/огонь: один Controller теперь = одна собираемая им пушка,
+    // поэтому состояние снова прямые поля блока (без списка MountState —
+    // мульти-пушечность вернём отдельной задачей позже).
+    private float   targetYaw   = 0f;
+    private boolean yawDirty    = false;
+    private float   targetPitch = 0f;
+    private boolean pitchDirty  = false;
+    private boolean fireRequested          = false;
+    private boolean cancelRequested        = false;
+    private boolean broadcastFireRequested = false;
+    private boolean hasPrevWantedAim = false;
+    private float   prevWantedYaw    = 0f;
+    private float   prevWantedPitch = 0f;
+    @Nullable private double[] entityAimCache;
+    @Nullable private Vec3     entityAimCacheMuzzle, entityAimCacheTarget, entityAimCacheRelVel;
+    private int entityAimCacheAge = 0;
+    @Nullable private double[] cmdAimCache;
+    @Nullable private Vec3     cmdAimCacheMuzzle, cmdAimCacheTarget;
+    private int cmdAimCacheAge = 0;
 
-        MountState(BlockPos pos) { this.pos = pos; }
-    }
-
-    private final List<MountState> mounts = new ArrayList<>();
-
-    /** Позиции всех привязанных mount'ов — вычисляется из mounts, отдельного списка не держим. */
-    private List<BlockPos> cannonMountPositions() {
-        List<BlockPos> out = new ArrayList<>(mounts.size());
-        for (MountState ms : mounts) out.add(ms.pos);
-        return out;
-    }
+    // ── Самостоятельная сборка пушки (аналог CannonMountBlockEntity/
+    // FixedCannonMountBlockEntity, но без отдельного блока-крепления).
+    // Controller сам хранит собранный контрапшен и сам реализует
+    // ControlPitchContraption.Block — см. конец класса.
+    @Nullable private PitchOrientedContraptionEntity mountedContraption = null;
+    private boolean   running   = false;
+    private float     cannonYaw, cannonPitch, prevCannonYaw, prevCannonPitch;
+    @Nullable private AssemblyException lastAssemblyException = null;
+    /** Позиция казённика, из которого собран текущий контрапшен — нужна для resetContraptionToOffset(). */
+    @Nullable private BlockPos assembledFromPos = null;
+    /** Редстоун на предыдущем тике — фронт запускает попытку сборки/разборки. */
+    private boolean prevAssemblyPowered = false;
 
     @Nullable private UUID     currentTargetUUID  = null;
     /**
@@ -188,7 +180,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
     private int scanTickCounter        = 0;
     private int transferTickCounter    = 0;
-    // alignedTicks теперь per-mount — см. MountState.
     private int confirmTicks           = 0;
     private int losGraceTicks          = 0;
     private int losCheckCounter        = 0;
@@ -217,11 +208,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     private static final double AIM_CACHE_VEL_THRESHOLD_SQ  = 0.001;
     /** Принудительный пересчёт раз в N тиков, даже если входные данные не изменились. */
     private static final int    AIM_CACHE_MAX_AGE            = 5;
-
-    // Баллистический кэш и prevWanted-углы теперь per-mount — см. MountState
-    // (entityAimCache*, hasPrevWantedAim, prevWantedYaw/Pitch). У каждого
-    // mount своё дуло и свой BallisticSolver.solve(), поэтому кэш общим
-    // быть не может.
 
     // ── Сглаженная скорость цели (для упреждения) ───────────────────────────
     // target.getDeltaMovement() — «сырая» физическая скорость за последний тик.
@@ -308,7 +294,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     // См. пояснение выше: тот же относительный (не абсолютный) порог по дистанции.
     private static final int    CMD_AIM_CACHE_MAX_AGE          = 10; // обновляем реже — цель статична
     private static final double CMD_AIM_CACHE_POS_THRESHOLD_SQ = 0.0009; // ~3% дистанции
-    // cmdAimCache* тоже per-mount — см. MountState.
 
     @Nullable private ServerSubLevel controllerSubLevel = null;
     private int subLevelCacheTimer = 0;
@@ -358,45 +343,49 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             }
         }
 
+        // ── Редстоун-сборка/разборка пушки ──────────────────────────────────
+        // Аналог onRedstoneUpdate() у CannonMountBlockEntity/FixedCannonMountBlockEntity,
+        // но без BlockState-свойства: просто фронт сигнала на соседях блока.
+        boolean assemblyPowered = level.hasNeighborSignal(pos);
+        if (assemblyPowered != prevAssemblyPowered) {
+            prevAssemblyPowered = assemblyPowered;
+            if (assemblyPowered) {
+                assembleCannon(level, pos);
+            } else {
+                disassembleCannon();
+            }
+        }
+        // Контрапшен сам вызывает attach()/onStall() на своём тике (см.
+        // PitchOrientedContraptionEntity.tickContraption()), но перенос
+        // cannonYaw/cannonPitch в контрапшен — наша обязанность, как это
+        // раньше делал CannonMountBlockEntity.tick() → applyRotation().
+        if (mountedContraption != null && !mountedContraption.isAlive()) mountedContraption = null;
+        prevCannonYaw   = cannonYaw;
+        prevCannonPitch = cannonPitch;
+        applyRotation();
+
         if (++transferTickCounter >= TRANSFER_INTERVAL) {
             transferTickCounter = 0;
-            if (!mounts.isEmpty()) tryTransferToCannon(level);
+            if (mountedContraption != null) tryTransferToCannon(level);
         }
 
         if (!active) return;
+        if (mountedContraption == null) return;
 
-        if (mounts.isEmpty()) findAndBindCannon(level, pos);
-
-        // Валидируем все привязанные mount'ы разом; невалидные — отваливаются
-        // (снимаем claim и убираем из списка), а не деактивируют весь блок —
-        // остальные пушки контроллера продолжают работать.
-        List<CannonMountBlockEntity> liveMounts = validateAllCannons(level);
-        if (liveMounts.isEmpty()) { LOGGER.debug("[tick] no live mounts -> deactivate at {}", pos); setActive(false); return; }
+        PitchOrientedContraptionEntity mount = mountedContraption;
 
         // Координаты контроллера считаем один раз за тик: при наличии
         // controllerSubLevel каждый вызов getControllerWorldPos() выполняет
         // матричное преобразование (SableCompat.toWorldPos).
         Vec3 tickWorldCenter = getControllerWorldPos();
-        // Точка скана/LOS-трекинга цели — берём дуло первого живого mount'а как
-        // репрезентативную (все mounts стоят на одном блоке, разница в пределах
-        // пары блоков не влияет на выбор цели/грубый LOS-скан; точное наведение
-        // каждой пушки считается отдельно в aimAndFireAtEntity/Commander ниже).
         Vec3 tickMuzzlePos = getControllerWorldPos();
-        {
-            CannonMountBlockEntity firstMount = liveMounts.get(0);
-            PitchOrientedContraptionEntity pc = firstMount.getContraption();
-            if (pc != null && pc.getContraption() instanceof AbstractMountedCannonContraption) {
-                tickMuzzlePos = computeRealMuzzlePos(pc, firstMount);
-            }
+        if (mount.getContraption() instanceof AbstractMountedCannonContraption) {
+            tickMuzzlePos = computeRealMuzzlePos(mount);
         }
 
-        // ── Per-mount yaw/pitch/fire tick ───────────────────────────────────
-        for (CannonMountBlockEntity mount : liveMounts) {
-            MountState ms = stateFor(mount.getBlockPos());
-            if (ms.yawDirty)   tickYaw(mount, ms);
-            if (ms.pitchDirty) tickPitch(mount, ms);
-            tickFire(level, mount, ms);
-        }
+        if (yawDirty)   tickYaw(mount);
+        if (pitchDirty) tickPitch(mount);
+        tickFire(level, mount);
 
         // Получаем реальный ServerLevel (работает и для ContraptionLevel)
         ServerLevel sl = resolveServerLevel(level);
@@ -461,8 +450,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             Level scanLevel = (controllerSubLevel != null) ? controllerSubLevel.getLevel() : sl;
             UUID prev = currentTargetUUID;
             scanForTarget(level, sl, scanLevel, tickWorldCenter, tickMuzzlePos);
-            if (currentTargetUUID != null && !currentTargetUUID.equals(prev))
-                for (MountState ms : mounts) ms.alignedTicks = 0;
+            if (currentTargetUUID != null && !currentTargetUUID.equals(prev)) alignedTicks = 0;
         }
 
         if (currentTargetUUID != null && commanderTargetPos == null) {
@@ -480,44 +468,28 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             }
             if (e != null && e.isAlive()) {
                 TargetSnapshot snap = computeTargetSnapshot(sl, e, tickMuzzlePos);
-                for (CannonMountBlockEntity mount : liveMounts) {
-                    aimAndFireAtEntity(sl, e, mount, stateFor(mount.getBlockPos()), snap);
-                }
+                aimAndFireAtEntity(sl, e, mount, snap);
             }
         }
 
         if (commanderTargetPos != null && currentTargetUUID == null) {
-            for (CannonMountBlockEntity mount : liveMounts) {
-                aimAndFireAtCommander(sl, mount, stateFor(mount.getBlockPos()));
-            }
+            aimAndFireAtCommander(sl, mount);
         }
     }
 
-    /** Находит (или создаёт) MountState для данной позиции mount'а. */
-    private MountState stateFor(BlockPos mountPos) {
-        for (MountState ms : mounts) if (ms.pos.equals(mountPos)) return ms;
-        MountState ms = new MountState(mountPos);
-        mounts.add(ms);
-        return ms;
-    }
-
     // ── Inlined Yaw logic ─────────────────────────────────────────────────────
-    private void tickYaw(CannonMountBlockEntity mount, MountState ms) {
-        if (mount.getContraption() == null) return;
-
-        double currentYaw = wrap360(mount.getContraption().yaw);
-        double desiredYaw = wrap360(ms.targetYaw);
+    private void tickYaw(PitchOrientedContraptionEntity mount) {
+        double currentYaw = wrap360(mount.yaw);
+        double desiredYaw = wrap360(targetYaw);
         double diff       = shortestYawDelta(currentYaw, desiredYaw);
         boolean snapped   = Math.abs(diff) <= YAW_DEADBAND_DEG;
 
         if (snapped) {
-            mount.setYaw((float) desiredYaw);
-            mount.notifyUpdate();
-            ms.yawDirty = false;
+            setYaw((float) desiredYaw);
+            yawDirty = false;
         } else {
             double step = Math.min(Math.abs(diff), YAW_MAX_DEG_PER_TICK) * Math.signum(diff);
-            mount.setYaw((float) wrap360(currentYaw + step));
-            mount.notifyUpdate();
+            setYaw((float) wrap360(currentYaw + step));
         }
     }
 
@@ -532,114 +504,72 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
     }
 
     // ── Inlined Pitch logic ───────────────────────────────────────────────────
-    private void tickPitch(CannonMountBlockEntity mount, MountState ms) {
-        if (mount.getContraption() == null) return;
-
-        // ИСПРАВЛЕНО (корень проблемы с "телепанием"/зависанием при наведении):
-        //
-        // mount.getContraption().pitch — это "raw" pitch контрапшена. Чтобы
-        // получить логический (world-space) pitch, его действительно нужно
-        // умножить на sgn: currentWorldPitch = c.pitch * sgn. Это чтение —
-        // верно и не менялось.
-        //
-        // НО mount.setPitch(float) — это НЕ обратная операция для чтения
-        // c.pitch. В декомпилированном исходнике CBC (CannonMountBlockEntity,
-        // версия 5.11.6/1.21.1) видно, что:
-        //
-        //   public void setPitch(float pitch) { this.cannonPitch = pitch; }
-        //
-        // То есть setPitch() просто напрямую записывает значение в cannonPitch
-        // (уже логическую, мировую величину, которая клэмпится CBC пределами
-        // -maximumDepression()..maximumElevation() БЕЗ участия sgn). Домножение
-        // на raw происходит позже и автоматически, внутри applyRotation():
-        //
-        //   this.mountedContraption.pitch = this.cannonPitch * sgn;
-        //
-        // Прошлая версия этого метода домножала target на sgn ПЕРЕД вызовом
-        // setPitch(), то есть применяла конвертацию дважды для пушек с
-        // sgn = -1 (не совпадающих по горизонтальной ориентации контрапшена
-        // с "нормальным" случаем). В результате CBC каждый тик получал
-        // pitch с инвертированным знаком относительно реально желаемого,
-        // тут же сам довинчивал это значение в противоположную сторону —
-        // и на следующем тике наш diff снова оказывался "неправильным",
-        // из-за чего пушка никогда не попадала в PITCH_DEADBAND_DEG и
-        // непрерывно дёргалась, откатываясь к 0 (точке, где знак роли не
-        // играет и обе стороны временно совпадают).
-        //
-        // Фикс: setPitch() вызывается с логическим (world-space) значением
-        // напрямую, без повторного домножения на sgn.
-        float sgn               = getContraptionSign(mount);
-        float currentWorldPitch = mount.getContraption().pitch * sgn;   // raw → world (верно, не трогаем)
-        float diff              = ms.targetPitch - currentWorldPitch;
+    private void tickPitch(PitchOrientedContraptionEntity mount) {
+        // См. пояснение к setPitch()/applyRotation(): cannonPitch — логическая
+        // (world-space) величина, mount.pitch (raw) = cannonPitch * sgn.
+        float sgn               = getContraptionSign();
+        float currentWorldPitch = mount.pitch * sgn;   // raw → world
+        float diff              = targetPitch - currentWorldPitch;
         boolean snapped         = Math.abs(diff) <= PITCH_DEADBAND_DEG;
 
         if (snapped) {
-            mount.setPitch(ms.targetPitch);   // setPitch ожидает world-space, НЕ raw
-            mount.notifyUpdate();
-            ms.pitchDirty = false;
+            setPitch(targetPitch);   // setPitch ожидает world-space, НЕ raw
+            pitchDirty = false;
         } else {
             float step = Math.min(Math.abs(diff), PITCH_MAX_DEG_PER_TICK) * Math.signum(diff);
-            mount.setPitch(currentWorldPitch + step);  // setPitch ожидает world-space, НЕ raw
-            mount.notifyUpdate();
+            setPitch(currentWorldPitch + step);  // setPitch ожидает world-space, НЕ raw
         }
     }
 
     // ── Inlined Fire logic ────────────────────────────────────────────────────
-    private void tickFire(Level level, CannonMountBlockEntity mount, MountState ms) {
+    private void tickFire(Level level, PitchOrientedContraptionEntity mount) {
         ServerLevel sl = resolveServerLevel(level);
         if (sl == null) return;
-        PitchOrientedContraptionEntity contraption = mount.getContraption();
-        if (contraption == null) return;
-        if (!(contraption.getContraption() instanceof AbstractMountedCannonContraption cannon)) return;
+        if (!(mount.getContraption() instanceof AbstractMountedCannonContraption cannon)) return;
 
-        if (ms.cancelRequested) {
-            ms.cancelRequested = false;
-            ms.fireRequested   = false;
-            cannon.onRedstoneUpdate(sl, contraption, false, 0, (ControlPitchContraption) mount);
+        if (cancelRequested) {
+            cancelRequested = false;
+            fireRequested    = false;
+            cannon.onRedstoneUpdate(sl, mount, false, 0, this);
             return;
         }
-        if (!ms.fireRequested && !ms.broadcastFireRequested) return;
-        ms.fireRequested          = false;
-        ms.broadcastFireRequested = false;
-        cannon.onRedstoneUpdate(sl, contraption, true, 15, (ControlPitchContraption) mount);
+        if (!fireRequested && !broadcastFireRequested) return;
+        fireRequested          = false;
+        broadcastFireRequested = false;
+        cannon.onRedstoneUpdate(sl, mount, true, 15, this);
     }
 
-    // ── Aim setters (per-mount) ────────────────────────────────────────────
-    private void setTargetYaw(MountState ms, float yaw) {
-        ms.targetYaw = yaw;
-        ms.yawDirty  = true;
+    // ── Aim setters ──────────────────────────────────────────────────────────
+    private void setTargetYaw(float yaw) {
+        this.targetYaw = yaw;
+        this.yawDirty  = true;
     }
 
-    private void setTargetPitch(MountState ms, float pitch) {
-        ms.targetPitch = pitch;
-        ms.pitchDirty  = true;
+    private void setTargetPitch(float pitch) {
+        this.targetPitch = pitch;
+        this.pitchDirty  = true;
     }
 
-    private void doRequestFire(MountState ms) {
-        ms.fireRequested   = true;
-        ms.cancelRequested = false;
+    private void doRequestFire() {
+        this.fireRequested   = true;
+        this.cancelRequested = false;
     }
 
-    private void doCancelFire(MountState ms) {
-        ms.fireRequested   = false;
-        ms.cancelRequested = true;
-    }
-
-    /** Ставит cancelRequested на все текущие mounts — используется при потере цели/деактивации. */
-    private void doCancelFireAll() {
-        for (MountState ms : mounts) doCancelFire(ms);
+    private void doCancelFire() {
+        this.fireRequested   = false;
+        this.cancelRequested = true;
     }
 
     // ── Aim / Fire wrappers (previously delegated to helper BEs) ─────────────
-    private void applyAim(MountState ms, float wantedYaw, float wantedPitch) {
-        if (allowHorizontal) setTargetYaw(ms, wantedYaw);
-        if (allowVertical)   setTargetPitch(ms, wantedPitch);
+    private void applyAim(float wantedYaw, float wantedPitch) {
+        if (allowHorizontal) setTargetYaw(wantedYaw);
+        if (allowVertical)   setTargetPitch(wantedPitch);
     }
 
-    private void requestFire(ServerLevel level, MountState ms) {
-        doRequestFire(ms);
-        ms.fireCooldown = MIN_FIRE_COOLDOWN;
-        ms.alignedTicks = 0;
+    private void requestFire(ServerLevel level) {
+        doRequestFire();
+        fireCooldown = MIN_FIRE_COOLDOWN;
+        alignedTicks = 0;
         broadcastFireToFrequencyPeers(level);
     }
 
@@ -673,7 +603,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
      * в её текущем положении.
      */
     public void receiveBroadcastFire() {
-        for (MountState ms : mounts) ms.broadcastFireRequested = true;
+        this.broadcastFireRequested = true;
     }
 
     private void dropEntityTarget(ServerLevel level) {
@@ -681,23 +611,21 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         currentTargetOnSubLevel = false;
         confirmTicks         = 0;
         losGraceTicks        = 0;
-        doCancelFireAll();
-        // Инвалидируем кэш баллистики каждого mount'а — цель сменилась
-        for (MountState ms : mounts) {
-            ms.alignedTicks         = 0;
-            ms.entityAimCache       = null;
-            ms.entityAimCacheMuzzle = null;
-            ms.entityAimCacheTarget = null;
-            ms.entityAimCacheRelVel = null;
-            ms.entityAimCacheAge    = 0;
-        }
+        doCancelFire();
+        alignedTicks         = 0;
+        // Инвалидируем кэш баллистики — цель сменилась
+        entityAimCache       = null;
+        entityAimCacheMuzzle = null;
+        entityAimCacheTarget = null;
+        entityAimCacheRelVel = null;
+        entityAimCacheAge    = 0;
         // Сбрасываем сглаженную скорость упреждения — она относилась к утраченной цели.
         velTrackUUID      = null;
         posHistoryCount   = 0;
         posHistoryHead    = 0;
         smoothedTargetVel = Vec3.ZERO;
         // Сбрасываем оценку угловой скорости наведения — она относилась к утраченной цели.
-        for (MountState ms : mounts) ms.hasPrevWantedAim = false;
+        hasPrevWantedAim = false;
     }
 
     // ── Scanning ──────────────────────────────────────────────────────────────
@@ -780,7 +708,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 currentTargetUUID = chosen.getUUID();
                 currentTargetOnSubLevel = chosenOnSubLevel;
                 confirmTicks  = 1;
-                for (MountState ms : mounts) ms.alignedTicks = 0;
+                alignedTicks  = 0;
                 losGraceTicks = 0;
             }
             commanderTargetPos = null;
@@ -821,8 +749,9 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         currentTargetUUID = null;
         confirmTicks      = 0;
         losGraceTicks     = 0;
-        doCancelFireAll();
-        for (MountState ms : mounts) { ms.alignedTicks = 0; ms.hasPrevWantedAim = false; }
+        doCancelFire();
+        alignedTicks      = 0;
+        hasPrevWantedAim  = false;
         velTrackUUID      = null;
         posHistoryCount   = 0;
         posHistoryHead    = 0;
@@ -901,14 +830,12 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
         BlockPos chosen = nearest.getKey();
 
-        // Инвалидируем кэш баллистики командера у всех mount'ов если цель сменилась
+        // Инвалидируем кэш баллистики командера если цель сменилась
         if (chosen != null && !chosen.equals(commanderTargetPos)) {
-            for (MountState ms : mounts) {
-                ms.cmdAimCache       = null;
-                ms.cmdAimCacheMuzzle = null;
-                ms.cmdAimCacheTarget = null;
-                ms.cmdAimCacheAge    = 0;
-            }
+            cmdAimCache       = null;
+            cmdAimCacheMuzzle = null;
+            cmdAimCacheTarget = null;
+            cmdAimCacheAge    = 0;
         }
         commanderTargetPos = chosen;
     }
@@ -978,13 +905,12 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         return new TargetSnapshot(targetPos, relVel);
     }
 
-    private void aimAndFireAtEntity(ServerLevel level, Entity target, CannonMountBlockEntity mount, MountState ms,
+    private void aimAndFireAtEntity(ServerLevel level, Entity target, PitchOrientedContraptionEntity c,
                                     TargetSnapshot snap) {
-        PitchOrientedContraptionEntity c = mount.getContraption();
-        if (c == null || !(c.getContraption() instanceof AbstractMountedCannonContraption)) return;
+        if (!(c.getContraption() instanceof AbstractMountedCannonContraption)) return;
         ownContraptionUUID = c.getUUID();
 
-        Vec3 muzzle    = computeRealMuzzlePos(c, mount);
+        Vec3 muzzle    = computeRealMuzzlePos(c);
         Vec3 targetPos = snap.targetPos();
         Vec3 relVel    = snap.relVel();
         Vec3 muzzleWorldPos = muzzle;
@@ -996,13 +922,13 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         // AIM_CACHE_POS_THRESHOLD_SQ) — иначе близкие цели пересчитывают кэш
         // намного чаще дальних при одинаковом абсолютном смещении в блоках.
         double distSqToTargetE = Math.max(muzzle.distanceToSqr(targetPos), 1.0);
-        boolean needRecalc = ms.entityAimCache == null
-                || ++ms.entityAimCacheAge >= AIM_CACHE_MAX_AGE
-                || muzzle.distanceToSqr(ms.entityAimCacheMuzzle) / distSqToTargetE > AIM_CACHE_POS_THRESHOLD_SQ
-                || targetPos.distanceToSqr(ms.entityAimCacheTarget) / distSqToTargetE > AIM_CACHE_POS_THRESHOLD_SQ
-                || relVel.subtract(ms.entityAimCacheRelVel).lengthSqr() > AIM_CACHE_VEL_THRESHOLD_SQ;
+        boolean needRecalc = entityAimCache == null
+                || ++entityAimCacheAge >= AIM_CACHE_MAX_AGE
+                || muzzle.distanceToSqr(entityAimCacheMuzzle) / distSqToTargetE > AIM_CACHE_POS_THRESHOLD_SQ
+                || targetPos.distanceToSqr(entityAimCacheTarget) / distSqToTargetE > AIM_CACHE_POS_THRESHOLD_SQ
+                || relVel.subtract(entityAimCacheRelVel).lengthSqr() > AIM_CACHE_VEL_THRESHOLD_SQ;
 
-        float sgn          = getContraptionSign(mount);
+        float sgn          = getContraptionSign();
         float currentPitch = c.pitch * sgn;
 
         if (needRecalc) {
@@ -1016,29 +942,29 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             // же скоростью ещё traverseTicks тиков сверху обычного упреждения
             // по времени полёта, которое считает сам BallisticSolver.
             double traverseTicks = estimateTraverseTicks(c.yaw, currentPitch,
-                    ms.prevWantedYaw, ms.prevWantedPitch, ms.hasPrevWantedAim);
+                    prevWantedYaw, prevWantedPitch, hasPrevWantedAim);
             Vec3 traverseAdjustedTarget = traverseTicks > 0.0
                     ? targetPos.add(relVel.scale(traverseTicks))
                     : targetPos;
-            ms.entityAimCache       = BallisticSolver.solve(muzzle, traverseAdjustedTarget, relVel,
+            entityAimCache       = BallisticSolver.solve(muzzle, traverseAdjustedTarget, relVel,
                     CBCAutoTargetConfig.MUZZLE_SPEED_BLOCKS_PER_TICK.get(),
                     CBCAutoTargetConfig.DEFAULT_GRAVITY.get(),
                     CBCAutoTargetConfig.DEFAULT_DRAG.get(),
                     false, worldMaxDepression(c, sgn), worldMaxElevation(c, sgn));
-            ms.entityAimCacheMuzzle = muzzle;
-            ms.entityAimCacheTarget = targetPos;
-            ms.entityAimCacheRelVel = relVel;
-            ms.entityAimCacheAge    = 0;
-            LOGGER.debug("[AimCache] entity recalc at {} mount={} traverseTicks={}", worldPosition, ms.pos, traverseTicks);
+            entityAimCacheMuzzle = muzzle;
+            entityAimCacheTarget = targetPos;
+            entityAimCacheRelVel = relVel;
+            entityAimCacheAge    = 0;
+            LOGGER.debug("[AimCache] entity recalc at {} traverseTicks={}", worldPosition, traverseTicks);
         }
-        double[] aim = ms.entityAimCache;
+        double[] aim = entityAimCache;
         // ─────────────────────────────────────────────────────────────────────
 
         float[] local       = ShipAimSolver.toLocalAim(aim[0], aim[1], controllerSubLevel);
         float   wantedYaw   = local[0];
         float   wantedPitch = local[1];
 
-        applyAim(ms, wantedYaw, wantedPitch);
+        applyAim(wantedYaw, wantedPitch);
 
         // Заблокированная ось (allowHorizontal/allowVertical = false) физически
         // не может довернуться до wantedYaw/wantedPitch, поэтому сравнивать
@@ -1051,35 +977,35 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         // шире допуск, иначе alignedTicks никогда не наберёт REQUIRED_ALIGNED_TICKS
         // подряд и орудие не выстрелит, пока цель не остановится.
         double yawTolExtra = 0, pitchTolExtra = 0;
-        if (ms.hasPrevWantedAim) {
-            double yawRate   = Math.abs(angleDiff(wantedYaw, ms.prevWantedYaw));
-            double pitchRate = Math.abs(wantedPitch - ms.prevWantedPitch);
+        if (hasPrevWantedAim) {
+            double yawRate   = Math.abs(angleDiff(wantedYaw, prevWantedYaw));
+            double pitchRate = Math.abs(wantedPitch - prevWantedPitch);
             yawTolExtra   = Math.min(yawRate   * AIM_RATE_TOLERANCE_GAIN, AIM_RATE_TOLERANCE_MAX);
             pitchTolExtra = Math.min(pitchRate * AIM_RATE_TOLERANCE_GAIN, AIM_RATE_TOLERANCE_MAX);
         }
-        ms.prevWantedYaw   = wantedYaw;
-        ms.prevWantedPitch = wantedPitch;
-        ms.hasPrevWantedAim = true;
+        prevWantedYaw   = wantedYaw;
+        prevWantedPitch = wantedPitch;
+        hasPrevWantedAim = true;
 
         boolean yawOk   = !allowHorizontal
                 || Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE + yawTolExtra;
         boolean pitchOk = !allowVertical
                 || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE + pitchTolExtra;
 
-        if (ms.fireCooldown > 0) ms.fireCooldown--;
-        ms.alignedTicks = (yawOk && pitchOk) ? ms.alignedTicks + 1 : 0;
+        if (fireCooldown > 0) fireCooldown--;
+        alignedTicks = (yawOk && pitchOk) ? alignedTicks + 1 : 0;
 
-        LOGGER.debug("[AimGate] entity pos={} mount={} wantedYaw={} curYaw={} yawDiff={} yawTol={} yawOk={} " +
+        LOGGER.debug("[AimGate] entity pos={} wantedYaw={} curYaw={} yawDiff={} yawTol={} yawOk={} " +
                         "wantedPitch={} curPitch={} pitchDiff={} pitchTol={} pitchOk={} alignedTicks={} " +
                         "fireCooldown={} confirmTicks={}",
-                worldPosition, ms.pos, wantedYaw, c.yaw, angleDiff(wantedYaw, c.yaw),
+                worldPosition, wantedYaw, c.yaw, angleDiff(wantedYaw, c.yaw),
                 BallisticSolver.YAW_TOLERANCE + yawTolExtra, yawOk,
                 wantedPitch, currentPitch, wantedPitch - currentPitch,
                 BallisticSolver.PITCH_TOLERANCE + pitchTolExtra, pitchOk,
-                ms.alignedTicks, ms.fireCooldown, confirmTicks);
+                alignedTicks, fireCooldown, confirmTicks);
 
-        if (yawOk && pitchOk && ms.alignedTicks >= REQUIRED_ALIGNED_TICKS
-                && ms.fireCooldown == 0 && confirmTicks >= 1) {
+        if (yawOk && pitchOk && alignedTicks >= REQUIRED_ALIGNED_TICKS
+                && fireCooldown == 0 && confirmTicks >= 1) {
             Entity check = level.getEntity(currentTargetUUID);
             // Если цель на sublevel — ищем её там
             if (check == null && currentTargetOnSubLevel && SableCompat.isAvailable()) {
@@ -1106,18 +1032,16 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                         : LineOfSightUtil.hasLineOfSightToEntity(ml, muzzleWorldPos, check));
             }
             if (check == null || !check.isAlive() || !fireLos) {
-                // Цель реально пропала (не видна ни для одного из mount'ов, что
-                // уже проверил fireLos) — сбрасываем цель контроллера целиком.
                 currentTargetUUID = null; currentTargetOnSubLevel = false;
-                ms.alignedTicks = 0; return;
+                alignedTicks = 0; return;
             }
-            requestFire(level, ms);
+            requestFire(level);
         }
     }
 
     private static final Logger LOGGER_AIM_CMD = LoggerFactory.getLogger("cbc_autotarget/AimAtCommander");
 
-    private void aimAndFireAtCommander(ServerLevel level, CannonMountBlockEntity mount, MountState ms) {
+    private void aimAndFireAtCommander(ServerLevel level, PitchOrientedContraptionEntity mount) {
         if (commanderTargetPos == null) return;
 
         Level scanLevel = (controllerSubLevel != null) ? controllerSubLevel.getLevel() : level;
@@ -1170,11 +1094,11 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             commanderTargetPos = null; return;
         }
 
-        PitchOrientedContraptionEntity c = mount.getContraption();
-        if (c == null || !(c.getContraption() instanceof AbstractMountedCannonContraption)) return;
+        PitchOrientedContraptionEntity c = mount;
+        if (!(c.getContraption() instanceof AbstractMountedCannonContraption)) return;
         ownContraptionUUID = c.getUUID();
 
-        Vec3 muzzle    = computeRealMuzzlePos(c, mount);
+        Vec3 muzzle    = computeRealMuzzlePos(c);
         // ИСПРАВЛЕНО: раньше здесь стояло commanderTargetPos.getCenter() —
         // это ЗАКЭШИРОВАННАЯ мировая позиция на момент последнего
         // scanForCommanderTargets()/fallback-резолва, округлённая до целого
@@ -1192,34 +1116,34 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         // ── Ballistic cache (commander) ───────────────────────────────────────
         // Командер стоит на месте — кэш живёт дольше (CMD_AIM_CACHE_MAX_AGE тиков).
         // Инвалидация по порогу позиции нужна если командер на корабле Sable.
-        boolean needRecalc = ms.cmdAimCache == null
-                || ++ms.cmdAimCacheAge >= CMD_AIM_CACHE_MAX_AGE
-                || muzzle.distanceToSqr(ms.cmdAimCacheMuzzle) / Math.max(muzzle.distanceToSqr(targetPos), 1.0) > CMD_AIM_CACHE_POS_THRESHOLD_SQ
-                || targetPos.distanceToSqr(ms.cmdAimCacheTarget) / Math.max(muzzle.distanceToSqr(targetPos), 1.0) > CMD_AIM_CACHE_POS_THRESHOLD_SQ;
+        boolean needRecalc = cmdAimCache == null
+                || ++cmdAimCacheAge >= CMD_AIM_CACHE_MAX_AGE
+                || muzzle.distanceToSqr(cmdAimCacheMuzzle) / Math.max(muzzle.distanceToSqr(targetPos), 1.0) > CMD_AIM_CACHE_POS_THRESHOLD_SQ
+                || targetPos.distanceToSqr(cmdAimCacheTarget) / Math.max(muzzle.distanceToSqr(targetPos), 1.0) > CMD_AIM_CACHE_POS_THRESHOLD_SQ;
 
         if (needRecalc) {
             // Same world-space limit correction for commander targets.
-            float sgnC = getContraptionSign(mount);
-            ms.cmdAimCache       = BallisticSolver.solve(muzzle, targetPos, relVel,
+            float sgnC = getContraptionSign();
+            cmdAimCache       = BallisticSolver.solve(muzzle, targetPos, relVel,
                     CBCAutoTargetConfig.MUZZLE_SPEED_BLOCKS_PER_TICK.get(),
                     CBCAutoTargetConfig.DEFAULT_GRAVITY.get(),
                     CBCAutoTargetConfig.DEFAULT_DRAG.get(),
                     false, worldMaxDepression(c, sgnC), worldMaxElevation(c, sgnC));
-            ms.cmdAimCacheMuzzle = muzzle;
-            ms.cmdAimCacheTarget = targetPos;
-            ms.cmdAimCacheAge    = 0;
-            LOGGER.debug("[AimCache] commander recalc at {} mount={}", worldPosition, ms.pos);
+            cmdAimCacheMuzzle = muzzle;
+            cmdAimCacheTarget = targetPos;
+            cmdAimCacheAge    = 0;
+            LOGGER.debug("[AimCache] commander recalc at {}", worldPosition);
         }
-        double[] aim = ms.cmdAimCache;
+        double[] aim = cmdAimCache;
         // ─────────────────────────────────────────────────────────────────────
 
         float[] local       = ShipAimSolver.toLocalAim(aim[0], aim[1], controllerSubLevel);
         float   wantedYaw   = local[0];
         float   wantedPitch = local[1];
 
-        applyAim(ms, wantedYaw, wantedPitch);
+        applyAim(wantedYaw, wantedPitch);
 
-        float   sgn          = getContraptionSign(mount);
+        float   sgn          = getContraptionSign();
         float   currentPitch = c.pitch * sgn;
         // См. пояснение в aimAndFireAtEntity: заблокированная ось всегда
         // считается готовой, иначе она никогда не станет "ok" и заблокирует
@@ -1229,11 +1153,11 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         boolean pitchOk = !allowVertical
                 || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE;
 
-        if (ms.fireCooldown > 0) ms.fireCooldown--;
-        ms.alignedTicks = (yawOk && pitchOk) ? ms.alignedTicks + 1 : 0;
+        if (fireCooldown > 0) fireCooldown--;
+        alignedTicks = (yawOk && pitchOk) ? alignedTicks + 1 : 0;
 
-        if (yawOk && pitchOk && ms.alignedTicks >= REQUIRED_ALIGNED_TICKS && ms.fireCooldown == 0) {
-            requestFire(level, ms);
+        if (yawOk && pitchOk && alignedTicks >= REQUIRED_ALIGNED_TICKS && fireCooldown == 0) {
+            requestFire(level);
         }
     }
 
@@ -1300,8 +1224,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
      * и никак не являлось источником проблемы с зависанием/телепанием
      * пушки. Настоящая причина была в другом месте (см. tickPitch()).
      */
-    private static float getContraptionSign(CannonMountBlockEntity mount) {
-        Direction d = mount.getContraptionDirection();
+    private float getContraptionSign() {
+        Direction d = getContraptionDirection();
         boolean flag = (d.getAxisDirection() == Direction.AxisDirection.POSITIVE)
                 == (d.getAxis() == Direction.Axis.X);
         return flag ? 1.0f : -1.0f;
@@ -1335,17 +1259,14 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         return (controllerSubLevel != null) ? SableCompat.toWorldPos(controllerSubLevel, local) : local;
     }
 
-    private Vec3 computeRealMuzzlePos(PitchOrientedContraptionEntity c, CannonMountBlockEntity mount) {
+    private Vec3 computeRealMuzzlePos(PitchOrientedContraptionEntity c) {
         Vec3 base = c.position();
         if (controllerSubLevel != null) base = SableCompat.toWorldPos(controllerSubLevel, base);
         double len = CBCAutoTargetConfig.BARREL_LENGTH.get();
         if (len <= 0.0) return base;
         // c.pitch is raw (CBC internal). For inverted cannons (sgn=-1) the physical
         // barrel direction is opposite to raw pitch, so we must use worldPitch = raw * sgn.
-        // sgn берём из ТОГО ЖЕ mount, чей контраптион c передан — раньше здесь
-        // подставлялся findMountBlockEntity() (единственный singular mount),
-        // что было неверно при нескольких mount'ах на блоке.
-        float sgn = getContraptionSign(mount);
+        float sgn = getContraptionSign();
         double yawRad   = Math.toRadians(-c.yaw + 90.0);
         double pitchRad = Math.toRadians(c.pitch * sgn);   // world-space pitch
         double cosP = Math.cos(pitchRad);
@@ -1391,141 +1312,194 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         return null;
     }
 
-    private void findAndBindCannon(Level level, BlockPos pos) {
-        // Раньше искали ЛУЧШИЙ ОДИН mount above/below и биндились к нему.
-        // Теперь блок — приёмник для НЕСКОЛЬКИХ пушек одновременно: собираем
-        // ВСЕ свободные CannonMount на всех 6 гранях и захватываем каждый.
-        // Пушки — мультиблочные конструкции (от 3 блоков в длину), поэтому
-        // физически заставить блок все 6 граней одновременно нельзя, но сам
-        // блок не должен ограничивать сторону — ограничение чисто геометрическое.
+    // ── ControlPitchContraption / ControlPitchContraption.Block ────────────────
+    // Реализация протокола CBC напрямую этим блоком — раньше это делал
+    // отдельный CannonMountBlockEntity, теперь Controller сам себе mount.
+    // Перенос методов из CannonMountBlockEntity (версия 5.11.3).
+
+    @Override
+    public BlockState getControllerState() {
+        return getBlockState();
+    }
+
+    @Override
+    public boolean isAttachedTo(AbstractContraptionEntity entity) {
+        return this.mountedContraption == entity;
+    }
+
+    @Override
+    public void attach(PitchOrientedContraptionEntity contraption) {
+        if (!(contraption.getContraption() instanceof AbstractMountedCannonContraption)) return;
+        this.mountedContraption = contraption;
+        if (level != null && !level.isClientSide) {
+            this.running = true;
+            setChanged();
+        }
+    }
+
+    @Override
+    public void onStall() {
+        // CannonMountBlockEntity здесь вызывает this.sendData() (обновление клиентского
+        // стейта самого BlockEntity) — у нас эквивалент это setChanged().
+        if (level != null && !level.isClientSide) setChanged();
+    }
+
+    @Override
+    public void disassemble() {
+        disassembleCannon();
+    }
+
+    @Override
+    public BlockPos getControllerBlockPos() {
+        return worldPosition;
+    }
+
+    @Override
+    public Vec3 getDismountPositionForContraption(PitchOrientedContraptionEntity poce) {
+        // Оригинал (CannonMountBlockEntity) спешивает игрока в противоположную от
+        // казённика сторону, используя своё blockstate-свойство VERTICAL_DIRECTION.
+        // У нас нет фиксированной оси — казённик может быть на любой из 6 граней,
+        // поэтому берём направление, противоположное реальной ориентации ствола.
+        Direction back = poce.getInitialOrientation().getOpposite();
+        return Vec3.atBottomCenterOf(worldPosition.relative(back));
+    }
+
+    /**
+     * Самостоятельная сборка пушки — аналог CannonMountBlockEntity.assemble() /
+     * FixedCannonMountBlockEntity.assemble(), но без отдельного блока-крепления
+     * и без фиксированного направления: ищем казённик (CannonContraptionProviderBlock)
+     * на любой из 6 граней Controller'а и собираем контрапшен в ту сторону.
+     */
+    private void assembleCannon(Level level, BlockPos pos) {
+        if (mountedContraption != null) return; // уже собрана
+
         for (Direction dir : Direction.values()) {
-            BlockPos candidate = pos.relative(dir);
-            BlockEntity be = level.getBlockEntity(candidate);
-            LOGGER.debug("[findAndBind] checking {} -> {}", candidate,
-                    be == null ? "null" : be.getClass().getSimpleName());
-            if (!(be instanceof CannonMountBlockEntity)) continue;
-            if (mounts.stream().anyMatch(ms -> ms.pos.equals(candidate))) continue; // уже наш
+            BlockPos assemblyPos = pos.relative(dir);
+            if (level.isOutsideBuildHeight(assemblyPos)) continue;
+            if (!(level.getBlockState(assemblyPos).getBlock() instanceof CannonContraptionProviderBlock provBlock)) continue;
 
-            if (!tryClaimMount(candidate, pos)) {
-                LOGGER.debug("[findAndBind] mount {} claimed by another controller", candidate);
-                continue;   // занят другим контроллером — пропускаем
+            AbstractMountedCannonContraption mountedCannon = provBlock.getCannonContraption();
+            if (mountedCannon == null) continue;
+            try {
+                if (!mountedCannon.assemble(level, assemblyPos)) continue; // не собралась (не хватает блоков и т.п.)
+            } catch (AssemblyException e) {
+                lastAssemblyException = e;
+                LOGGER.debug("[assemble] dir={} failed at {}: {}", dir, assemblyPos, e.getMessage());
+                continue; // эта грань не подошла — пробуем следующую
             }
 
-            mounts.add(new MountState(candidate));
-            LOGGER.debug("[findAndBind] bound cannon at {}", candidate);
+            // Направление ствола берём из уже собранного контрапшена, а не из
+            // направления, в котором мы искали казённик — это разные вещи
+            // (см. CannonMountBlockEntity.assemble(): facing1 = mountedCannon.initialOrientation()).
+            Direction facing1 = mountedCannon.initialOrientation();
+            mountedCannon.removeBlocksFromWorld(level, BlockPos.ZERO);
+            PitchOrientedContraptionEntity contraptionEntity =
+                    PitchOrientedContraptionEntity.create(level, mountedCannon, facing1, this);
+            this.mountedContraption = contraptionEntity;
+            this.running = true;
+            this.lastAssemblyException = null;
+            this.assembledFromPos = assemblyPos;
+            resetContraptionToOffset();
+            level.addFreshEntity(contraptionEntity);
+            setChanged();
+
+            AllSoundEvents.CONTRAPTION_ASSEMBLE.playOnServer(level, pos);
+            return;
         }
-
-        if (!mounts.isEmpty()) setChanged();
-        else LOGGER.debug("[findAndBind] no free CannonMount found around {}", pos);
+        // Ни на одной из 6 граней не нашлось подходящего казённика — тихо не собираем
+        // (как FixedCannonMountBlockEntity делает через AssemblyException при отсутствии блока).
     }
 
-    private boolean tryClaimMount(BlockPos mount, BlockPos ctrl) {
-        BlockPos ex = MOUNT_OWNER_REGISTRY.putIfAbsent(mount.asLong(), ctrl);
-        return ex == null || ex.equals(ctrl);
+    public void disassembleCannon() {
+        if (!running && mountedContraption == null) return;
+        if (mountedContraption != null) {
+            resetContraptionToOffset();
+            mountedContraption.save(new CompoundTag()); // Crude refresh of block data — как в CBC
+            mountedContraption.disassemble();
+            AllSoundEvents.CONTRAPTION_DISASSEMBLE.playOnServer(level, worldPosition);
+        }
+        running = false;
+        mountedContraption = null;
+        assembledFromPos = null;
+        setChanged();
     }
 
-    private void releaseMount(BlockPos mount) {
-        if (mount != null) MOUNT_OWNER_REGISTRY.remove(mount.asLong(), worldPosition);
+    /** Аналог CannonMountBlockEntity.resetContraptionToOffset(). */
+    private void resetContraptionToOffset() {
+        if (mountedContraption == null) return;
+        cannonPitch     = 0;
+        cannonYaw       = getContraptionDirection().toYRot();
+        prevCannonPitch = cannonPitch;
+        prevCannonYaw   = cannonYaw;
+
+        mountedContraption.pitch     = cannonPitch;
+        mountedContraption.yaw       = cannonYaw;
+        mountedContraption.prevPitch = mountedContraption.pitch;
+        mountedContraption.prevYaw   = mountedContraption.yaw;
+
+        mountedContraption.setXRot(cannonPitch);
+        mountedContraption.setYRot(cannonYaw);
+        mountedContraption.xRotO = mountedContraption.getXRot();
+        mountedContraption.yRotO = mountedContraption.getYRot();
+
+        // Контрапшен физически стоит там, где была собрана пушка (казённик
+        // рядом с Controller'ом), а не внутри блока самого контроллера.
+        BlockPos offsetPos = assembledFromPos != null ? assembledFromPos : worldPosition;
+        mountedContraption.setPos(Vec3.atBottomCenterOf(offsetPos));
     }
 
     /**
-     * Валидирует пушку и возвращает mount если найден, null если нет.
-     * Заменяет старую boolean-версию — позволяет переиспользовать mount в tick()
-     * без повторного getBlockEntity.
+     * Аналог CannonMountBlockEntity.applyRotation() — переносит наши
+     * cannonYaw/cannonPitch (или, если пушку крутит что-то другое —
+     * canBeTurnedByController()==false, — читает угол оттуда) в контрапшен.
+     * Вызывается каждый server tick из tick(), т.к. раньше это делал
+     * CannonMountBlockEntity.tick(), которого в этой цепочке больше нет.
      */
-    @Nullable
-    private CannonMountBlockEntity resolveMount(Level level, BlockPos cannonMountPos) {
-        if (cannonMountPos == null) { LOGGER.debug("[validate] cannonMountPos=null"); return null; }
-        if (level.getBlockEntity(cannonMountPos) instanceof CannonMountBlockEntity m) {
-            PitchOrientedContraptionEntity c = m.getContraption();
-            if (c != null) ownContraptionUUID = c.getUUID();
-            LOGGER.debug("[validate] OK via level at {}", cannonMountPos);
-            return m;
+    private void applyRotation() {
+        if (mountedContraption == null) return;
+        float sgn = getContraptionSign();
+
+        if (!mountedContraption.canBeTurnedByController(this)) {
+            float d = -mountedContraption.maximumDepression();
+            float e = mountedContraption.maximumElevation();
+            cannonPitch = net.minecraft.util.Mth.clamp(mountedContraption.pitch, d, e) * sgn;
+            cannonYaw   = mountedContraption.yaw;
+        } else {
+            mountedContraption.pitch = cannonPitch * sgn;
+            mountedContraption.yaw   = cannonYaw;
         }
-        // Если SubLevel-кэш устарел — обновляем перед поиском.
-        // Это критично при первой валидации после активации через Commander,
-        // когда subLevelCacheTimer ещё не успел обнулиться.
-        if (controllerSubLevel == null && SableCompat.isAvailable() && level instanceof ServerLevel sl) {
-            controllerSubLevel = SableCompat.getSubLevelForBlock(sl, worldPosition);
-            subLevelCacheTimer = 0;
-            LOGGER.debug("[validate] lazy-refreshed controllerSubLevel={} at {}",
-                    controllerSubLevel == null ? "null" : "present", worldPosition);
-        }
-        if (controllerSubLevel != null) {
-            var acc = controllerSubLevel.getPlot().getEmbeddedLevelAccessor();
-            if (acc.getBlockEntity(cannonMountPos) instanceof CannonMountBlockEntity m) {
-                PitchOrientedContraptionEntity c = m.getContraption();
-                if (c != null) ownContraptionUUID = c.getUUID();
-                LOGGER.debug("[validate] OK via SubLevel accessor at {}", cannonMountPos);
-                return m;
-            }
-            LOGGER.debug("[validate] FAIL: not found via level or SubLevel accessor at {}", cannonMountPos);
-            return null;
-        }
-        LOGGER.debug("[validate] FAIL: not found via level, no SubLevel at {}", cannonMountPos);
-        return null;
     }
 
-    /**
-     * Резолвит все привязанные mount'ы разом. Невалидный mount (блок сломан/
-     * выгружен) снимается с claim и убирается из списка — остальные пушки
-     * блока при этом продолжают работать, а не деактивируют весь контроллер.
-     */
-    private List<CannonMountBlockEntity> validateAllCannons(Level level) {
-        List<CannonMountBlockEntity> live = new ArrayList<>(mounts.size());
-        Iterator<MountState> it = mounts.iterator();
-        while (it.hasNext()) {
-            MountState ms = it.next();
-            CannonMountBlockEntity m = resolveMount(level, ms.pos);
-            if (m == null) {
-                releaseMount(ms.pos);
-                it.remove();
-            } else {
-                live.add(m);
-            }
-        }
-        return live;
-    }
+    private void setYaw(float yaw)     { this.cannonYaw   = yaw; }
+    private void setPitch(float pitch) { this.cannonPitch = pitch; }
 
-    @Nullable
-    private CannonMountBlockEntity getMount(Level level, BlockPos cannonMountPos) {
-        return resolveMount(level, cannonMountPos);
+    private Direction getContraptionDirection() {
+        return mountedContraption == null ? Direction.NORTH : mountedContraption.getInitialOrientation();
     }
 
     private void tryTransferToCannon(Level level) {
-        // Общий инвентарь контроллера кормит все привязанные mount'ы по очереди —
-        // предмет уходит в первый mount, готовый его принять.
-        for (MountState ms : mounts) {
-            BlockPos cannonMountPos = ms.pos;
+        if (mountedContraption == null) return;
+        // Большая пушка (MountedBigCannonContraption) не реализует GetItemStorage и не имеет
+        // обычного IItemHandler — зарядка снарядов/картриджей в её Quick-Firing Breech устроена
+        // как замена блока в казённике, а не как вставка предмета (см. CannonMountPoint#bigCannonInsert).
+        if (mountedContraption.getContraption() instanceof MountedBigCannonContraption bigCannon) {
+            if (BigCannonBreechFeeder.feed(bigCannon, mountedContraption, inventory)) setChanged();
+            return;
+        }
 
-            // Большая пушка (MountedBigCannonContraption) не реализует GetItemStorage и не имеет
-            // обычного IItemHandler (getItemHandler ниже всегда вернёт null для неё) — зарядка
-            // снарядов/картриджей в её Quick-Firing Breech устроена как замена блока в казённике,
-            // а не как вставка предмета. Обрабатываем этот случай отдельно, тем же путём, что и
-            // Mechanical Arm из Create (CannonMountPoint#bigCannonInsert).
-            CannonMountBlockEntity mountForBigCannon = getMount(level, cannonMountPos);
-            if (mountForBigCannon != null) {
-                PitchOrientedContraptionEntity poce = mountForBigCannon.getContraption();
-                if (poce != null && poce.getContraption() instanceof MountedBigCannonContraption bigCannon) {
-                    if (BigCannonBreechFeeder.feed(bigCannon, poce, inventory)) setChanged();
-                    continue;
-                }
-            }
-
-            for (Direction dir : Direction.values()) {
-                IItemHandler h = level.getCapability(Capabilities.ItemHandler.BLOCK, cannonMountPos, dir);
-                if (h == null) continue;
-                for (int slot = 0; slot < inventory.getSlots(); slot++) {
-                    ItemStack stack = inventory.getStackInSlot(slot);
-                    if (stack.isEmpty()) continue;
-                    for (int cs = 0; cs < h.getSlots(); cs++) {
-                        ItemStack rem = h.insertItem(cs, stack.copy(), false);
-                        if (rem.getCount() < stack.getCount()) {
-                            inventory.setStackInSlot(slot, rem);
-                            setChanged();
-                            break;
-                        }
-                    }
+        // Автопушка (MountedAutocannonContraption) отдаёт IItemHandler через саму
+        // contraption-сущность (см. CannonMountBlockEntity.getItemHandler) — кормим напрямую.
+        IItemHandler h = mountedContraption.getCapability(Capabilities.ItemHandler.ENTITY);
+        if (h == null) return;
+        for (int slot = 0; slot < inventory.getSlots(); slot++) {
+            ItemStack stack = inventory.getStackInSlot(slot);
+            if (stack.isEmpty()) continue;
+            for (int cs = 0; cs < h.getSlots(); cs++) {
+                ItemStack rem = h.insertItem(cs, stack.copy(), false);
+                if (rem.getCount() < stack.getCount()) {
+                    inventory.setStackInSlot(slot, rem);
+                    setChanged();
+                    break;
                 }
             }
         }
@@ -1544,26 +1518,23 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         // ContraptionLevel не поддерживает setBlock — пропускаем
         if (level instanceof ServerLevel) {
             level.setBlock(worldPosition, getBlockState().setValue(ControllerBlock.ACTIVE, active), 3);
-            // Синхронизируем BE-данные (cannonMountPos, active) с клиентом
+            // Синхронизируем BE-данные (active и т.д.) с клиентом
             level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
         }
 
         if (!active) {
-            for (MountState ms : mounts) releaseMount(ms.pos);
-            doCancelFireAll();
-            for (MountState ms : mounts) {
-                ms.broadcastFireRequested = false;
-                // Инвалидируем оба кэша баллистики при деактивации
-                ms.entityAimCache       = null;
-                ms.entityAimCacheMuzzle = null;
-                ms.entityAimCacheTarget = null;
-                ms.entityAimCacheRelVel = null;
-                ms.entityAimCacheAge    = 0;
-                ms.cmdAimCache       = null;
-                ms.cmdAimCacheMuzzle = null;
-                ms.cmdAimCacheTarget = null;
-                ms.cmdAimCacheAge    = 0;
-            }
+            doCancelFire();
+            broadcastFireRequested = false;
+            // Инвалидируем оба кэша баллистики при деактивации
+            entityAimCache       = null;
+            entityAimCacheMuzzle = null;
+            entityAimCacheTarget = null;
+            entityAimCacheRelVel = null;
+            entityAimCacheAge    = 0;
+            cmdAimCache       = null;
+            cmdAimCacheMuzzle = null;
+            cmdAimCacheTarget = null;
+            cmdAimCacheAge    = 0;
             ownerCommanderUUID = null; // Освобождаем привязку к командеру
         }
         currentTargetUUID       = null;
@@ -1571,7 +1542,9 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         commanderTargetPos = null;
         confirmTicks  = 0;
         losGraceTicks = 0;
-        for (MountState ms : mounts) { ms.alignedTicks = 0; ms.yawDirty = false; ms.pitchDirty = false; }
+        alignedTicks  = 0;
+        yawDirty      = false;
+        pitchDirty    = false;
 
         if (newActive) {
             int iv   = CBCAutoTargetConfig.SCAN_INTERVAL_TICKS.get();
@@ -1600,8 +1573,10 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         setChanged();
     }
 
-    public void onPlaced()  { if (level != null) findAndBindCannon(level, worldPosition); }
-    public void onRemoved() { for (MountState ms : mounts) releaseMount(ms.pos); }
+    // Сборка теперь только по редстоуну (см. tick()) — при установке блока
+    // самостоятельно ничего не собираем.
+    public void onPlaced()  { }
+    public void onRemoved() { disassembleCannon(); }
 
     // ── Клиентский реестр для рендерера оверлея ───────────────────────────────
     // Хранит позиции всех загруженных ControllerBlockEntity на клиенте.
@@ -1698,7 +1673,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
     // ── Accessors ─────────────────────────────────────────────────────────────
     public ItemStackHandler getInventory()       { return inventory; }
-    public List<BlockPos> getCannonMountPos() { return cannonMountPositions(); }
     public int              getFilterMask()       { return filterData.getMask(); }
     public void             setFilterMask(int m)  { filterData.setMask(m); setChanged(); }
     public TargetFilterData getFilterData()       { return filterData; }
@@ -1712,14 +1686,14 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         // поворота — иначе пушка успевает довернуться на несколько градусов
         // (до YAW_MAX_DEG_PER_TICK за тик) прежде чем yawDirty естественно
         // сбросится сам в tickYaw(), даже если applyAim() больше не выставляет
-        // новую цель поворота. Применяется ко всем mount'ам блока.
-        if (!v) for (MountState ms : mounts) ms.yawDirty = false;
+        // новую цель поворота.
+        if (!v) yawDirty = false;
         setChanged();
     }
 
     public void setAllowVertical(boolean v) {
         this.allowVertical = v;
-        if (!v) for (MountState ms : mounts) ms.pitchDirty = false;
+        if (!v) pitchDirty = false;
         setChanged();
     }
 
@@ -1745,8 +1719,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
             filterData.setWhitelistEnabled(cf.isWhitelistEnabled());
             filterData.replaceWhitelist(new ArrayList<>(cf.getWhitelist()));
             this.commanderPos = srcCommanderPos;
-            LOGGER.info("[applyFromCommander] APPLY activate={} active={} cannonMountPositions={} owner={} newMask={} at {}",
-                    activate, active, cannonMountPositions(), ownerCommanderUUID, Integer.toBinaryString(filterData.getMask()), worldPosition);
+            LOGGER.info("[applyFromCommander] APPLY activate={} active={} hasMountedContraption={} owner={} newMask={} at {}",
+                    activate, active, mountedContraption != null, ownerCommanderUUID, Integer.toBinaryString(filterData.getMask()), worldPosition);
             // Принудительно обновляем SubLevel-кэш перед активацией, так как
             // блок мог быть пересоздан Sable (hotswap) или только что размещён.
             if (SableCompat.isAvailable() && level instanceof ServerLevel sl) {
@@ -1755,11 +1729,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
                 LOGGER.debug("[applyFromCommander] refreshed controllerSubLevel={} at {}",
                         controllerSubLevel == null ? "null" : "present", worldPosition);
             }
-            // Если ни один привязанный mount не валиден в текущем SubLevel — пересканируем.
-            if (validateAllCannons(level).isEmpty()) {
-                LOGGER.debug("[applyFromCommander] no valid mounts, rebinding cannons at {}", worldPosition);
-                if (level != null) findAndBindCannon(level, worldPosition);
-            }
+            // Сборка пушки теперь идёт только по редстоуну (см. tick()) —
+            // активация от командера просто включает active, без ребиндинга.
             if (!active) setActive(true);
         } else {
             // Деактивация: принимаем только от того командера, который активировал.
@@ -1800,8 +1771,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         tag.putBoolean("AllowHorizontal", allowHorizontal);
         tag.putBoolean("AllowVertical",   allowVertical);
         tag.putInt("FireFrequency", fireFrequency);
-        long[] mountLongs = mounts.stream().mapToLong(ms -> ms.pos.asLong()).toArray();
-        if (mountLongs.length > 0) tag.putLongArray("CannonMountPositions", mountLongs);
         return tag;
     }
 
@@ -1824,8 +1793,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
         super.saveAdditional(tag, reg);
         tag.put("Inventory", inventory.serializeNBT(reg));
         tag.putBoolean("Active", active);
-        long[] mountLongs = mounts.stream().mapToLong(ms -> ms.pos.asLong()).toArray();
-        if (mountLongs.length > 0) tag.putLongArray("CannonMountPositions", mountLongs);
         if (currentTargetUUID   != null) tag.putUUID("CurrentTargetUUID",  currentTargetUUID);
         if (commanderPos        != null) tag.putLong("CommanderPos",        commanderPos.asLong());
         if (commanderTargetPos  != null) tag.putLong("CommanderTargetPos",  commanderTargetPos.asLong());
@@ -1868,10 +1835,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider {
 
         if (tag.contains("Inventory")) inventory.deserializeNBT(reg, tag.getCompound("Inventory"));
         active             = tag.getBoolean("Active");
-        mounts.clear();
-        if (tag.contains("CannonMountPositions")) {
-            for (long l : tag.getLongArray("CannonMountPositions")) mounts.add(new MountState(BlockPos.of(l)));
-        }
         currentTargetUUID  = tag.hasUUID("CurrentTargetUUID")  ? tag.getUUID("CurrentTargetUUID")             : null;
         commanderPos       = tag.contains("CommanderPos")      ? BlockPos.of(tag.getLong("CommanderPos"))      : null;
         commanderTargetPos = tag.contains("CommanderTargetPos")? BlockPos.of(tag.getLong("CommanderTargetPos")): null;
