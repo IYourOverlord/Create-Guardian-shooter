@@ -1355,6 +1355,18 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     }
 
     @Override
+    public void markForReassembly() {
+        // CBC 5.11.6: помечает, что контрапшен нужно пересобрать (например, после
+        // hot-reload/выгрузки), не выключая сам Controller. running остаётся true,
+        // поэтому tick() (см. assembleCannon вызов) пересоберёт пушку на следующем тике.
+        if (mountedContraption != null) {
+            mountedContraption.disassemble();
+            mountedContraption = null;
+        }
+        setChanged();
+    }
+
+    @Override
     public Vec3 getDismountPositionForContraption(PitchOrientedContraptionEntity poce) {
         // Оригинал (CannonMountBlockEntity) спешивает игрока в противоположную от
         // казённика сторону, используя своё blockstate-свойство VERTICAL_DIRECTION.
@@ -1459,12 +1471,20 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         if (mountedContraption == null) return;
         float sgn = getContraptionSign();
 
-        if (!mountedContraption.canBeTurnedByController(this)) {
+        boolean canTurn = mountedContraption.canBeTurnedByController(this);
+        if (!canTurn) {
             float d = -mountedContraption.maximumDepression();
             float e = mountedContraption.maximumElevation();
             cannonPitch = net.minecraft.util.Mth.clamp(mountedContraption.pitch, d, e) * sgn;
             cannonYaw   = mountedContraption.yaw;
         } else {
+            // prevPitch/prevYaw двигаем вперёд ПЕРЕД записью нового pitch/yaw —
+            // иначе CBCContraptionRotationState (рендер) интерполирует между
+            // застывшим значением с момента сборки (resetContraptionToOffset)
+            // и текущим, из-за чего ствол визуально не следует за реальным
+            // углом наводки, хотя pitch/yaw физически верны каждый тик.
+            mountedContraption.prevPitch = mountedContraption.pitch;
+            mountedContraption.prevYaw   = mountedContraption.yaw;
             mountedContraption.pitch = cannonPitch * sgn;
             mountedContraption.yaw   = cannonYaw;
         }
