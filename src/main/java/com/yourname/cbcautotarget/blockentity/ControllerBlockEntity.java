@@ -380,18 +380,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         prevCannonPitch = cannonPitch;
         applyRotation();
 
-        // cannonYaw/cannonPitch — обычные Java-поля контрапшена, не SynchedEntityData,
-        // поэтому клиент никогда не узнаёт об их изменении сам по себе (в отличие от
-        // оригинального CannonMountBlockEntity, который пересчитывает тот же угол
-        // независимо и на клиенте через синхронизированную кинетическую скорость).
-        // Рассылаем текущий угол явным update-пакетом блока, чтобы clientTick() ниже
-        // мог применить его к контрапшену через applyRotation().
-        if (level instanceof ServerLevel
-                && (cannonYaw != prevCannonYaw || cannonPitch != prevCannonPitch)) {
-            level.sendBlockUpdated(pos, state, state, 3);
-            LOGGER.debug("[sendBlockUpdated] {} cannonYaw={} cannonPitch={}", pos, cannonYaw, cannonPitch);
-        }
-
         if (++transferTickCounter >= TRANSFER_INTERVAL) {
             transferTickCounter = 0;
             if (mountedContraption != null) tryTransferToCannon(level);
@@ -414,6 +402,24 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         if (yawDirty)   tickYaw(mount);
         if (pitchDirty) tickPitch(mount);
         tickFire(level, mount);
+
+        // cannonYaw/cannonPitch — обычные Java-поля контрапшена, не SynchedEntityData,
+        // поэтому клиент никогда не узнаёт об их изменении сам по себе (в отличие от
+        // оригинального CannonMountBlockEntity, который пересчитывает тот же угол
+        // независимо и на клиенте через синхронизированную кинетическую скорость).
+        // Рассылаем текущий угол явным update-пакетом блока, чтобы clientTick()
+        // мог применить его к контрапшену через applyRotation().
+        //
+        // ВАЖНО: должно идти здесь — сразу после tickYaw()/tickPitch(), единственных
+        // мест, которые реально меняют cannonYaw/cannonPitch за этот тик — а не
+        // сразу после первого applyRotation() в начале метода (тогда cannonYaw ещё
+        // не успевал измениться и sendBlockUpdated никогда не срабатывал), и не в
+        // конце метода (там есть промежуточные `return`, например resolveServerLevel
+        // == null, которые могли бы пропустить отправку уже случившегося поворота).
+        if (level instanceof ServerLevel
+                && (cannonYaw != prevCannonYaw || cannonPitch != prevCannonPitch)) {
+            level.sendBlockUpdated(pos, state, state, 3);
+        }
 
         // Получаем реальный ServerLevel (работает и для ContraptionLevel)
         ServerLevel sl = resolveServerLevel(level);
@@ -502,6 +508,23 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
 
         if (commanderTargetPos != null && currentTargetUUID == null) {
             aimAndFireAtCommander(sl, mount);
+        }
+
+        // cannonYaw/cannonPitch — обычные Java-поля контрапшена, не SynchedEntityData,
+        // поэтому клиент никогда не узнаёт об их изменении сам по себе (в отличие от
+        // оригинального CannonMountBlockEntity, который пересчитывает тот же угол
+        // независимо и на клиенте через синхронизированную кинетическую скорость).
+        // Рассылаем текущий угол явным update-пакетом блока, чтобы clientTick()
+        // мог применить его к контрапшену через applyRotation().
+        //
+        // ВАЖНО: эта проверка должна идти здесь, а не сразу после первого
+        // applyRotation() в начале tick() — на тот момент tickYaw()/tickPitch()
+        // (которые единственные реально меняют cannonYaw/cannonPitch) ещё не
+        // вызывались в этом тике, поэтому cannonYaw == prevCannonYaw всегда
+        // оказывалось true и sendBlockUpdated никогда не срабатывал.
+        if (level instanceof ServerLevel
+                && (cannonYaw != prevCannonYaw || cannonPitch != prevCannonPitch)) {
+            level.sendBlockUpdated(pos, state, state, 3);
         }
     }
 
