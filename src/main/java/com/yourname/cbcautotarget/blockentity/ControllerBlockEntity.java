@@ -341,6 +341,13 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     // getUpdateTag()/loadAdditional(), в контрапшен, чтобы модель визуально
     // поворачивалась. См. applyRotation() и рассылку sendBlockUpdated в tick().
     public static void clientTick(Level level, BlockPos pos, BlockState state, ControllerBlockEntity be) {
+        // ВРЕМЕННАЯ ДИАГНОСТИКА: проверяем, доходит ли cannonYaw/cannonPitch до
+        // клиента и присоединён ли mountedContraption на клиентской стороне.
+        // Раз в секунду (20 тиков), чтобы не спамить лог.
+        if (pos.asLong() % 1 == 0 && level.getGameTime() % 20 == 0) {
+            LOGGER.debug("[clientTick] {} mountedContraption={} cannonYaw={} cannonPitch={}",
+                    pos, be.mountedContraption != null, be.cannonYaw, be.cannonPitch);
+        }
         be.applyRotation();
     }
 
@@ -382,6 +389,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         if (level instanceof ServerLevel
                 && (cannonYaw != prevCannonYaw || cannonPitch != prevCannonPitch)) {
             level.sendBlockUpdated(pos, state, state, 3);
+            LOGGER.debug("[sendBlockUpdated] {} cannonYaw={} cannonPitch={}", pos, cannonYaw, cannonPitch);
         }
 
         if (++transferTickCounter >= TRANSFER_INTERVAL) {
