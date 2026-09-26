@@ -95,7 +95,12 @@ public class ControllerBlock extends BaseEntityBlock {
     @Nullable
     @Override
     public <T extends BlockEntity> BlockEntityTicker<T> getTicker(Level level, BlockState state, BlockEntityType<T> type) {
-        if (level.isClientSide) return null;
+        // Клиент тоже тикает: applyRotation() переносит присланные сервером
+        // cannonYaw/cannonPitch в контрапшен (см. ControllerBlockEntity.clientTick).
+        // Без этого ствол визуально стоит на месте, хотя сервер стреляет правильно.
+        if (level.isClientSide) {
+            return createTickerHelper(type, ModBlockEntities.CONTROLLER.get(), ControllerBlockEntity::clientTick);
+        }
         return createTickerHelper(type, ModBlockEntities.CONTROLLER.get(), ControllerBlockEntity::serverTick);
     }
 

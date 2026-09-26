@@ -335,6 +335,15 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         be.tick(level, pos, state);
     }
 
+    // Клиент никогда не считает цели/наводку сам (в отличие от оригинального
+    // CannonMountBlockEntity, который дублирует полный расчёт угла на клиенте) —
+    // он лишь переносит cannonYaw/cannonPitch, присланные сервером через
+    // getUpdateTag()/loadAdditional(), в контрапшен, чтобы модель визуально
+    // поворачивалась. См. applyRotation() и рассылку sendBlockUpdated в tick().
+    public static void clientTick(Level level, BlockPos pos, BlockState state, ControllerBlockEntity be) {
+        be.applyRotation();
+    }
+
     private void tick(Level level, BlockPos pos, BlockState state) {
         if (SableCompat.isAvailable() && level instanceof ServerLevel sl) {
             if (++subLevelCacheTimer >= SUBLEVEL_CACHE_INTERVAL) {
@@ -363,6 +372,17 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         prevCannonYaw   = cannonYaw;
         prevCannonPitch = cannonPitch;
         applyRotation();
+
+        // cannonYaw/cannonPitch — обычные Java-поля контрапшена, не SynchedEntityData,
+        // поэтому клиент никогда не узнаёт об их изменении сам по себе (в отличие от
+        // оригинального CannonMountBlockEntity, который пересчитывает тот же угол
+        // независимо и на клиенте через синхронизированную кинетическую скорость).
+        // Рассылаем текущий угол явным update-пакетом блока, чтобы clientTick() ниже
+        // мог применить его к контрапшену через applyRotation().
+        if (level instanceof ServerLevel
+                && (cannonYaw != prevCannonYaw || cannonPitch != prevCannonPitch)) {
+            level.sendBlockUpdated(pos, state, state, 3);
+        }
 
         if (++transferTickCounter >= TRANSFER_INTERVAL) {
             transferTickCounter = 0;
@@ -1471,18 +1491,19 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         if (mountedContraption == null) return;
         float sgn = getContraptionSign();
 
-        boolean canTurn = mountedContraption.canBeTurnedByController(this);
-        if (!canTurn) {
+        if (!mountedContraption.canBeTurnedByController(this)) {
             float d = -mountedContraption.maximumDepression();
             float e = mountedContraption.maximumElevation();
             cannonPitch = net.minecraft.util.Mth.clamp(mountedContraption.pitch, d, e) * sgn;
             cannonYaw   = mountedContraption.yaw;
         } else {
-            // prevPitch/prevYaw двигаем вперёд ПЕРЕД записью нового pitch/yaw —
-            // иначе CBCContraptionRotationState (рендер) интерполирует между
-            // застывшим значением с момента сборки (resetContraptionToOffset)
-            // и текущим, из-за чего ствол визуально не следует за реальным
-            // углом наводки, хотя pitch/yaw физически верны каждый тик.
+            // Рендер контрапшена (OrientedContraptionEntity.applyLocalTransforms) берёт
+            // угол через getViewYRot/getViewXRot, которые интерполируют
+            // angleLerp(partialTicks, prevYaw, yaw) / (prevPitch, pitch) — НЕ сырые
+            // pitch/yaw напрямую. Раз мы меняем pitch/yaw каждый тик вручную (а не
+            // через штатный тик самого Create-контрапшена), prevYaw/prevPitch нужно
+            // сдвигать сюда же, иначе они застревают на значении с момента сборки
+            // (resetContraptionToOffset) и модель визуально не поворачивается.
             mountedContraption.prevPitch = mountedContraption.pitch;
             mountedContraption.prevYaw   = mountedContraption.yaw;
             mountedContraption.pitch = cannonPitch * sgn;
@@ -1791,6 +1812,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         tag.putBoolean("AllowHorizontal", allowHorizontal);
         tag.putBoolean("AllowVertical",   allowVertical);
         tag.putInt("FireFrequency", fireFrequency);
+        tag.putFloat("CannonYaw",   cannonYaw);
+        tag.putFloat("CannonPitch", cannonPitch);
         return tag;
     }
 
@@ -1837,6 +1860,12 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     @Override
     protected void loadAdditional(CompoundTag tag, HolderLookup.Provider reg) {
         super.loadAdditional(tag, reg);
+
+        // CannonYaw/CannonPitch приходят с каждым getUpdateTag()-пакетом (клиентский
+        // рендер-тик применяет их к контрапшену через applyRotation(), см. clientTick());
+        // читаем их до веток hasRealData/return ниже, чтобы поворот применялся всегда.
+        if (tag.contains("CannonYaw"))   cannonYaw   = tag.getFloat("CannonYaw");
+        if (tag.contains("CannonPitch")) cannonPitch = tag.getFloat("CannonPitch");
 
         // Тег содержит реальные данные если присутствует Inventory или FilterMask.
         boolean hasRealData = tag.contains("Inventory") || tag.contains("FilterMask");
