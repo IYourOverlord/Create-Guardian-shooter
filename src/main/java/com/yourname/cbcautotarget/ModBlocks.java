@@ -24,8 +24,7 @@ public class ModBlocks {
         return BlockBehaviour.Properties.of()
                 .mapColor(MapColor.SAND)
                 .strength(2.0f)
-                .sound(SoundType.CORAL_BLOCK)
-                .noCollission();
+                .sound(SoundType.CORAL_BLOCK);
     }
 
     // Tier 1 — 25 blocks scan radius

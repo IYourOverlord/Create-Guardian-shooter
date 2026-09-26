@@ -6,6 +6,8 @@ import com.yourname.cbcautotarget.blockentity.ControllerBlockEntity;
 import com.yourname.cbcautotarget.blockentity.MachineSoulBlockEntity;
 import com.yourname.cbcautotarget.network.ModPackets;
 import com.simibubi.create.api.schematic.nbt.SafeNbtWriterRegistry;
+import rbasamoyai.createbigcannons.cannon_control.config.CannonMountPropertiesHandler;
+import rbasamoyai.createbigcannons.cannon_control.config.SimpleBlockMountProperties;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
@@ -30,6 +32,15 @@ public class CBCAutoTarget {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
+        // Без этого CBC не находит datapack-конфиг pitch-лимитов для нашего BE
+        // (CannonMountPropertiesHandler.getProperties() формата
+        // data/cbc_autotarget/cannon_mounts/block_entities/controller/...)
+        // и молча подставляет FALLBACK_BLOCK с maximumElevation/Depression = 0 —
+        // из-за этого пушки, собранные Controller'ом, физически не могли
+        // наводиться по вертикали (см. big_cannon.json/autocannon.json).
+        CannonMountPropertiesHandler.registerBlockMountSerializer(
+                ModBlockEntities.CONTROLLER.get(), new SimpleBlockMountProperties.Serializer());
+
         // SafeNbtWriter регистрируется в commonSetup (не в конструкторе):
         // в конструкторе COMMANDER.get() ещё unbound → NullPointerException.
         //

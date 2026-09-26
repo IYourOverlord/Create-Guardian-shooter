@@ -1006,7 +1006,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
             entityAimCacheTarget = targetPos;
             entityAimCacheRelVel = relVel;
             entityAimCacheAge    = 0;
-            LOGGER.debug("[AimCache] entity recalc at {} traverseTicks={}", worldPosition, traverseTicks);
         }
         double[] aim = entityAimCache;
         // ─────────────────────────────────────────────────────────────────────
