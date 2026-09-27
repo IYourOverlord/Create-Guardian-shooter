@@ -1,5 +1,6 @@
 package com.yourname.cbcautotarget.blockentity;
 
+import com.yourname.cbcautotarget.CBCAutoTarget;
 import com.yourname.cbcautotarget.filter.TargetCategory;
 import com.yourname.cbcautotarget.filter.TargetFilterData;
 import com.yourname.cbcautotarget.CBCAutoTargetConfig;
@@ -341,13 +342,6 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     // getUpdateTag()/loadAdditional(), в контрапшен, чтобы модель визуально
     // поворачивалась. См. applyRotation() и рассылку sendBlockUpdated в tick().
     public static void clientTick(Level level, BlockPos pos, BlockState state, ControllerBlockEntity be) {
-        // ВРЕМЕННАЯ ДИАГНОСТИКА: проверяем, доходит ли cannonYaw/cannonPitch до
-        // клиента и присоединён ли mountedContraption на клиентской стороне.
-        // Раз в секунду (20 тиков), чтобы не спамить лог.
-        if (pos.asLong() % 1 == 0 && level.getGameTime() % 20 == 0) {
-            LOGGER.debug("[clientTick] {} mountedContraption={} cannonYaw={} cannonPitch={}",
-                    pos, be.mountedContraption != null, be.cannonYaw, be.cannonPitch);
-        }
         be.applyRotation();
     }
 
@@ -997,11 +991,14 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
             Vec3 traverseAdjustedTarget = traverseTicks > 0.0
                     ? targetPos.add(relVel.scale(traverseTicks))
                     : targetPos;
+            float depLimit = worldMaxDepression(c, sgn);
+            float eleLimit = worldMaxElevation(c, sgn);
+            LOGGER.debug("[PitchLimits] pos={} maxDepression={} maxElevation={}", worldPosition, depLimit, eleLimit);
             entityAimCache       = BallisticSolver.solve(muzzle, traverseAdjustedTarget, relVel,
                     CBCAutoTargetConfig.MUZZLE_SPEED_BLOCKS_PER_TICK.get(),
                     CBCAutoTargetConfig.DEFAULT_GRAVITY.get(),
                     CBCAutoTargetConfig.DEFAULT_DRAG.get(),
-                    false, worldMaxDepression(c, sgn), worldMaxElevation(c, sgn));
+                    false, depLimit, eleLimit);
             entityAimCacheMuzzle = muzzle;
             entityAimCacheTarget = targetPos;
             entityAimCacheRelVel = relVel;
@@ -1282,26 +1279,19 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     }
 
     /**
-     * ИСПРАВЛЕНО: раньше depression/elevation свопались местами при sgn=-1,
-     * по аналогии с (ошибочным) предположением, что raw↔world конвертация
-     * pitch должна затрагивать и пределы. Но в декомпилированном CBC видно
-     * (CannonMountBlockEntity.tick()):
-     *
-     *   this.cannonPitch = Mth.clamp(newPitch % 360.0F, -getMaxDepress(), getMaxElevate());
-     *
-     * где getMaxDepress()/getMaxElevate() берутся из контрапшена НАПРЯМУЮ,
-     * без какого-либо участия sgn. cannonPitch — уже логическая (мировая)
-     * величина в той же системе координат, что и наш targetPitch, так что
-     * никакого свопа депрессии/элевации по знаку контрапшена не требуется —
-     * пределы одинаковы независимо от sgn.
+     * Лимиты берутся из CBCAutoTargetConfig (MAX_PITCH_DEPRESSION/ELEVATION),
+     * а не из c.maximumDepression()/maximumElevation() (CBC datapack-properties) —
+     * см. комментарий у CBCAutoTargetConfig.MAX_PITCH_DEPRESSION про причину.
+     * cannonPitch — логическая (мировая) величина, поэтому sgn тут не участвует
+     * (см. историю правок worldMaxDepression/worldMaxElevation).
      */
     private static float worldMaxDepression(PitchOrientedContraptionEntity c, float sgn) {
-        return c.maximumDepression();
+        return CBCAutoTargetConfig.MAX_PITCH_DEPRESSION.get().floatValue();
     }
 
     /** @see #worldMaxDepression */
     private static float worldMaxElevation(PitchOrientedContraptionEntity c, float sgn) {
-        return c.maximumElevation();
+        return CBCAutoTargetConfig.MAX_PITCH_ELEVATION.get().floatValue();
     }
 
     private Vec3 getControllerWorldPos() {
@@ -1370,6 +1360,17 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     @Override
     public BlockState getControllerState() {
         return getBlockState();
+    }
+
+    /**
+     * Реализация ControlPitchContraption.getTypeId() — ID mount-блока (не типа
+     * орудия), используется CBC только для локализационного ключа UI-подсказки
+     * при ручном управлении (см. MountedAutocannonContraption.tick()); наше
+     * автонаведение этот путь не задействует.
+     */
+    @Override
+    public net.minecraft.resources.ResourceLocation getTypeId() {
+        return net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(CBCAutoTarget.MOD_ID, "controller");
     }
 
     @Override

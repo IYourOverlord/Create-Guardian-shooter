@@ -27,6 +27,16 @@ public class CBCAutoTargetConfig {
      * Каждый raycast = 3 трассировки луча через блоки → 5 кандидатов = максимум 15 лучей.
      */
     public static final ModConfigSpec.IntValue MAX_RAYCAST_CANDIDATES;
+    /**
+     * Лимиты вертикального наведения (в градусах), независимые от CBC datapack
+     * (data/cbc_autotarget/cannon_mounts/block_entities/...). CBC читает эти
+     * значения через собственный SimpleBlockMountProperties.Serializer, который
+     * в 5.11.6/create-v6 кидает NPE на JSON без per-block ключей и глотает его
+     * молча (CannonMountPropertiesHandler.BlockEntityReloadListener.apply()) —
+     * задавая лимиты напрямую здесь, мы не зависим от этого пути вообще.
+     */
+    public static final ModConfigSpec.DoubleValue MAX_PITCH_DEPRESSION;
+    public static final ModConfigSpec.DoubleValue MAX_PITCH_ELEVATION;
 
     static {
         BUILDER.push("targeting");
@@ -37,6 +47,8 @@ public class CBCAutoTargetConfig {
         DEFAULT_DRAG            = BUILDER.defineInRange("default_drag", 0.0, 0.0, 1.0);
         BARREL_LENGTH           = BUILDER.defineInRange("barrel_length", 0.0, 0.0, 32.0);
         MAX_RAYCAST_CANDIDATES  = BUILDER.defineInRange("max_raycast_candidates", 9, 1, 50);
+        MAX_PITCH_DEPRESSION    = BUILDER.defineInRange("max_pitch_depression", 45.0, 0.0, 90.0);
+        MAX_PITCH_ELEVATION     = BUILDER.defineInRange("max_pitch_elevation", 80.0, 0.0, 90.0);
         BUILDER.pop();
         SPEC = BUILDER.build();
     }
