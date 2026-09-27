@@ -1313,8 +1313,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
 
     /**
      * Ограничивает wantedYaw сектором вокруг направления стороны крепления
-     * пушки (getContraptionDirection().toYRot()), не давая ей развернуться
-     * "назад" сквозь собственный блок Controller/платформу.
+     * пушки (directionToAtanYawDeg(getContraptionDirection())), не давая ей
+     * развернуться "назад" сквозь собственный блок Controller/платформу.
      *
      * depression/elevation (см. worldMaxDepression/worldMaxElevation) ограничивают
      * только ВЕЛИЧИНУ наклона ствола, но никак не мешают ему довернуться по
@@ -1339,15 +1339,31 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
      * разрешение на огонь, пока цель вне сектора — см. использование в
      * aimAndFireAtEntity()/aimAndFireAtCommander().
      *
-     * wantedYaw здесь уже в CBC-конвенции (тот же базис, что и c.yaw /
-     * getContraptionDirection().toYRot() — см. ShipAimSolver.toCBC()), поэтому
-     * clamp делается напрямую через angleDiff, без дополнительных преобразований.
+     /**
+     * wantedYaw здесь в "атан"-конвенции BallisticSolver (atan2(dZ, dX): East=0°,
+     * South=90°, West=180°, North=-90°/270°, растёт против часовой при виде
+     * сверху) — той же, что и c.yaw (mountedContraption.yaw), т.к. tickYaw()
+     * пишет туда именно wantedYaw без какой-либо конвертации, а
+     * computeRealMuzzlePos() читает c.yaw обратно в векторы той же формулой
+     * (-c.yaw + 90°, cos/sin). Это НЕ то же самое, что Direction.toYRot() —
+     * тот использует стандартную Minecraft-конвенцию (South=0°, растёт по
+     * часовой). Раньше здесь facingYaw брался напрямую из toYRot() в
+     * предположении, что базисы совпадают — предположение было неверным.
+     * Вдоль оси Z (NORTH/SOUTH) обе конвенции по случайности почти совпадают
+     * по знаку, поэтому клампинг казался рабочим спереди/сзади, но вдоль оси
+     * X (EAST/WEST, т.е. когда пушка примонтирована СБОКУ от Controller'а)
+     * они расходятся на 90° со сменой знака — сектор "куда можно целиться"
+     * разворачивался в неверную сторону и переставал закрывать направление
+     * на сам Controller, из-за чего пушка доворачивалась на собственный
+     * блок Controller и расстреливала его. Конвертируем facingYaw в ту же
+     * атан-конвенцию через atan2(dir.getStepZ(), dir.getStepX()), чтобы
+     * сравнение offset = wantedYaw - facingYaw было корректным в обеих осях.
      */
     private YawClampResult clampYawToMountFacing(float wantedYaw) {
         float maxOffset = CBCAutoTargetConfig.MAX_YAW_FROM_MOUNT_FACING.get().floatValue();
         if (maxOffset >= 180.0f) return new YawClampResult(wantedYaw, false); // лимит снят — полный круг разрешён
 
-        float facingYaw = getContraptionDirection().toYRot();
+        float facingYaw = directionToAtanYawDeg(getContraptionDirection());
         float offset     = angleDiff(wantedYaw, facingYaw); // (wantedYaw - facingYaw), нормализовано в [-180,180]
         if (offset > maxOffset) {
             float clamped = facingYaw + maxOffset;
@@ -1362,6 +1378,17 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
             return new YawClampResult(clamped, true);
         }
         return new YawClampResult(wantedYaw, false);
+    }
+
+    /**
+     * Направление в "атан"-конвенции BallisticSolver: atan2(dZ, dX) в градусах
+     * (East=0°, South=90°, West=180°/-180°, North=-90°). См. пояснение у
+     * clampYawToMountFacing() — эта конвенция отличается от стандартного
+     * Direction.toYRot() (Minecraft: South=0°, растёт по часовой) и её
+     * нельзя заменять последним для горизонтальных направлений.
+     */
+    private static float directionToAtanYawDeg(Direction dir) {
+        return (float) Math.toDegrees(Math.atan2(dir.getStepZ(), dir.getStepX()));
     }
 
 
@@ -1547,10 +1574,48 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     public void disassembleCannon() {
         if (!running && mountedContraption == null) return;
         if (mountedContraption != null) {
+            // Защита от бага "пушка при разборке становится блоками и встаёт
+            // на место Controller'а, уничтожая его". Причина в том, что
+            // Controller стоит вплотную (1 блок) к казённику, и Create при
+            // Contraption.addBlocksToWorld() кладёт блоки собранной структуры
+            // в мир через жёсткий world.setBlockAndUpdate(pos, state), не
+            // проверяя, стоит ли там уже "чужой" (не входивший в структуру)
+            // блок. Если геометрия пушки (казённая часть/накатник и т.п.)
+            // после её текущего поворота (yaw/pitch на момент разборки)
+            // накладывается на клетку самого Controller'а — тот физически
+            // затирается. Вместо того чтобы двигать сборку дальше от
+            // Controller'а (что ломает задумку "пушка вплотную"), запоминаем
+            // состояние блока/BlockEntity Controller'а ДО disassemble() и,
+            // если после него Controller пропал или стал не тем блоком —
+            // немедленно восстанавливаем его на этом же месте вместе с NBT.
+            BlockState controllerStateBackup = level != null ? level.getBlockState(worldPosition) : null;
+            CompoundTag controllerNbtBackup = null;
+            HolderLookup.Provider controllerNbtBackupReg = null;
+            if (level != null) {
+                CompoundTag self = new CompoundTag();
+                saveAdditional(self, level.registryAccess());
+                controllerNbtBackup = self;
+                controllerNbtBackupReg = level.registryAccess();
+            }
+
             resetContraptionToOffset();
             mountedContraption.save(new CompoundTag()); // Crude refresh of block data — как в CBC
             mountedContraption.disassemble();
             AllSoundEvents.CONTRAPTION_DISASSEMBLE.playOnServer(level, worldPosition);
+
+            if (level instanceof ServerLevel serverLevel && controllerStateBackup != null
+                    && !level.getBlockState(worldPosition).is(controllerStateBackup.getBlock())) {
+                LOGGER.warn("[disassembleCannon] Controller block at {} was overwritten by contraption disassembly " +
+                                "(now {}), restoring it to prevent data/block loss.",
+                        worldPosition, level.getBlockState(worldPosition));
+                serverLevel.setBlock(worldPosition, controllerStateBackup, 3);
+                BlockEntity restoredBe = serverLevel.getBlockEntity(worldPosition);
+                if (restoredBe instanceof ControllerBlockEntity restoredController
+                        && controllerNbtBackup != null) {
+                    restoredController.loadAdditional(controllerNbtBackup, controllerNbtBackupReg);
+                    restoredController.setChanged();
+                }
+            }
         }
         running = false;
         mountedContraption = null;
@@ -1562,7 +1627,20 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     private void resetContraptionToOffset() {
         if (mountedContraption == null) return;
         cannonPitch     = 0;
-        cannonYaw       = getContraptionDirection().toYRot();
+        // ВАЖНО: cannonYaw/mountedContraption.yaw живут в "атан"-конвенции
+        // BallisticSolver (East=0°, растёт против часовой — см. пояснение
+        // у clampYawToMountFacing()/directionToAtanYawDeg()), а НЕ в
+        // стандартной Minecraft-конвенции Direction.toYRot() (South=0°,
+        // растёт по часовой). Именно mountedContraption.yaw/prevYaw реально
+        // управляет визуальным поворотом модели (см. комментарий в
+        // applyRotation(): рендер контрапшена берёт угол через
+        // getViewYRot(), который интерполирует prevYaw/yaw, а не
+        // getYRot()/yRotO). Использование toYRot() здесь означало, что
+        // сразу после сборки ствол физически ориентировался по чужой
+        // системе координат — для граней вдоль оси Z (NORTH/SOUTH) это
+        // почти не было заметно, а для боковых граней (EAST/WEST) пушка
+        // стартовала развёрнутой на 90° не в ту сторону.
+        cannonYaw       = directionToAtanYawDeg(getContraptionDirection());
         prevCannonPitch = cannonPitch;
         prevCannonYaw   = cannonYaw;
 
@@ -1571,8 +1649,13 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         mountedContraption.prevPitch = mountedContraption.pitch;
         mountedContraption.prevYaw   = mountedContraption.yaw;
 
+        // getYRot()/setYRot() остаются в штатной Minecraft-конвенции
+        // (toYRot()) — это отдельный ванильный путь Entity, используемый
+        // Create для AABB/коллизий вне CBC-специфичного pitch-рендера, и
+        // трогать его конвенцию не нужно.
+        float vanillaYaw = getContraptionDirection().toYRot();
         mountedContraption.setXRot(cannonPitch);
-        mountedContraption.setYRot(cannonYaw);
+        mountedContraption.setYRot(vanillaYaw);
         mountedContraption.xRotO = mountedContraption.getXRot();
         mountedContraption.yRotO = mountedContraption.getYRot();
 
