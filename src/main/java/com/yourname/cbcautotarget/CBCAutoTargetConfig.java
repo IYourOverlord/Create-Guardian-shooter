@@ -37,6 +37,19 @@ public class CBCAutoTargetConfig {
      */
     public static final ModConfigSpec.DoubleValue MAX_PITCH_DEPRESSION;
     public static final ModConfigSpec.DoubleValue MAX_PITCH_ELEVATION;
+    /**
+     * Максимальное отклонение по yaw (в градусах) от направления стороны
+     * блока Controller, к которой физически примонтирована пушка
+     * (getContraptionDirection().toYRot()). Без этого лимита depression/
+     * elevation ограничивают только величину наклона ствола, но не мешают
+     * ему развернуться по горизонтали на любой угол — включая "сквозь"
+     * собственный блок контроллера и его платформу, т.к. mountedContraption.
+     * pitch/yaw выставляются нами напрямую, в обход штатной кинетики/
+     * коллизий Create (см. applyRotation()/tickYaw()/tickPitch()).
+     * 90° = пушка может смотреть только в полусферу "перед" своей стороной
+     * крепления (не может развернуться назад, за блок Controller).
+     */
+    public static final ModConfigSpec.DoubleValue MAX_YAW_FROM_MOUNT_FACING;
 
     static {
         BUILDER.push("targeting");
@@ -49,6 +62,7 @@ public class CBCAutoTargetConfig {
         MAX_RAYCAST_CANDIDATES  = BUILDER.defineInRange("max_raycast_candidates", 9, 1, 50);
         MAX_PITCH_DEPRESSION    = BUILDER.defineInRange("max_pitch_depression", 45.0, 0.0, 90.0);
         MAX_PITCH_ELEVATION     = BUILDER.defineInRange("max_pitch_elevation", 80.0, 0.0, 90.0);
+        MAX_YAW_FROM_MOUNT_FACING = BUILDER.defineInRange("max_yaw_from_mount_facing", 90.0, 0.0, 180.0);
         BUILDER.pop();
         SPEC = BUILDER.build();
     }

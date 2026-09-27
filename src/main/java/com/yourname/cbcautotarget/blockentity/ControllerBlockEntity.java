@@ -1008,7 +1008,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         // ─────────────────────────────────────────────────────────────────────
 
         float[] local       = ShipAimSolver.toLocalAim(aim[0], aim[1], controllerSubLevel);
-        float   wantedYaw   = local[0];
+        YawClampResult yawClamp = clampYawToMountFacing(local[0]);
+        float   wantedYaw   = yawClamp.clampedYaw();
         float   wantedPitch = local[1];
 
         applyAim(wantedYaw, wantedPitch);
@@ -1035,18 +1036,19 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         hasPrevWantedAim = true;
 
         boolean yawOk   = !allowHorizontal
-                || Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE + yawTolExtra;
+                || (!yawClamp.unreachable()
+                && Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE + yawTolExtra);
         boolean pitchOk = !allowVertical
                 || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE + pitchTolExtra;
 
         if (fireCooldown > 0) fireCooldown--;
         alignedTicks = (yawOk && pitchOk) ? alignedTicks + 1 : 0;
 
-        LOGGER.debug("[AimGate] entity pos={} wantedYaw={} curYaw={} yawDiff={} yawTol={} yawOk={} " +
+        LOGGER.debug("[AimGate] entity pos={} wantedYaw={} curYaw={} yawDiff={} yawTol={} yawOk={} yawUnreachable={} " +
                         "wantedPitch={} curPitch={} pitchDiff={} pitchTol={} pitchOk={} alignedTicks={} " +
                         "fireCooldown={} confirmTicks={}",
                 worldPosition, wantedYaw, c.yaw, angleDiff(wantedYaw, c.yaw),
-                BallisticSolver.YAW_TOLERANCE + yawTolExtra, yawOk,
+                BallisticSolver.YAW_TOLERANCE + yawTolExtra, yawOk, yawClamp.unreachable(),
                 wantedPitch, currentPitch, wantedPitch - currentPitch,
                 BallisticSolver.PITCH_TOLERANCE + pitchTolExtra, pitchOk,
                 alignedTicks, fireCooldown, confirmTicks);
@@ -1185,7 +1187,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         // ─────────────────────────────────────────────────────────────────────
 
         float[] local       = ShipAimSolver.toLocalAim(aim[0], aim[1], controllerSubLevel);
-        float   wantedYaw   = local[0];
+        YawClampResult yawClamp = clampYawToMountFacing(local[0]);
+        float   wantedYaw   = yawClamp.clampedYaw();
         float   wantedPitch = local[1];
 
         applyAim(wantedYaw, wantedPitch);
@@ -1194,9 +1197,13 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         float   currentPitch = c.pitch * sgn;
         // См. пояснение в aimAndFireAtEntity: заблокированная ось всегда
         // считается готовой, иначе она никогда не станет "ok" и заблокирует
-        // огонь по командеру навсегда.
+        // огонь по командеру навсегда. Но если цель вне достижимого сектора
+        // по yaw (yawClamp.unreachable()) — yawOk принудительно false, иначе
+        // пушка откроет огонь в сторону границы клампа, а не в сторону
+        // реальной цели (см. clampYawToMountFacing()).
         boolean yawOk   = !allowHorizontal
-                || Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE;
+                || (!yawClamp.unreachable()
+                && Math.abs(angleDiff(wantedYaw, c.yaw)) < BallisticSolver.YAW_TOLERANCE);
         boolean pitchOk = !allowVertical
                 || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE;
 
@@ -1293,6 +1300,70 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     private static float worldMaxElevation(PitchOrientedContraptionEntity c, float sgn) {
         return CBCAutoTargetConfig.MAX_PITCH_ELEVATION.get().floatValue();
     }
+
+    /**
+     * Результат ограничения wantedYaw сектором стороны крепления.
+     * unreachable=true означает, что реальный требуемый угол лежит вне
+     * допустимого сектора — clampedYaw в этом случае лишь "упирается" в
+     * границу сектора, а НЕ является направлением на настоящую цель, и
+     * поэтому не должен использоваться как основание для разрешения на
+     * выстрел (см. clampYawToMountFacing()).
+     */
+    private record YawClampResult(float clampedYaw, boolean unreachable) {}
+
+    /**
+     * Ограничивает wantedYaw сектором вокруг направления стороны крепления
+     * пушки (getContraptionDirection().toYRot()), не давая ей развернуться
+     * "назад" сквозь собственный блок Controller/платформу.
+     *
+     * depression/elevation (см. worldMaxDepression/worldMaxElevation) ограничивают
+     * только ВЕЛИЧИНУ наклона ствола, но никак не мешают ему довернуться по
+     * горизонтали на произвольный угол — т.к. mountedContraption.pitch/yaw
+     * выставляются нами напрямую в applyRotation()/tickYaw()/tickPitch(), в обход
+     * штатной кинетики/коллизий Create, которые в ванильном CBC физически не
+     * дают turntable провернуться сквозь то, что его держит. Без этого клампа
+     * пушка, смонтированная сбоку блока, может навестись на цель позади себя,
+     * визуально проходя стволом сквозь Controller (см. диагностику с
+     * логами/скриншотом — wantedYaw уходил в область ±180°, а не ограничивался
+     * полусферой "перед" стороной крепления).
+     *
+     * ВАЖНО: когда реальный требуемый угол лежит вне сектора, clampedYaw —
+     * это НЕ направление на цель, а просто ближайшая достижимая граница.
+     * Раньше (первая версия клампа) это приводило к тому, что ствол доворачивался
+     * до границы сектора, c.yaw совпадал с clampedYaw, yawOk становился true,
+     * и пушка стреляла в сторону границы клампа, а не в сторону цели —
+     * то есть открывала огонь, физически не имея возможности попасть (см.
+     * диагностику: [YawClamp] ... clamped=180.0, повторяющийся десятки тиков
+     * подряд с одним и тем же offset, притом что цель оставалась недостижимой).
+     * Поэтому вызывающий код обязан проверять unreachable и не выдавать
+     * разрешение на огонь, пока цель вне сектора — см. использование в
+     * aimAndFireAtEntity()/aimAndFireAtCommander().
+     *
+     * wantedYaw здесь уже в CBC-конвенции (тот же базис, что и c.yaw /
+     * getContraptionDirection().toYRot() — см. ShipAimSolver.toCBC()), поэтому
+     * clamp делается напрямую через angleDiff, без дополнительных преобразований.
+     */
+    private YawClampResult clampYawToMountFacing(float wantedYaw) {
+        float maxOffset = CBCAutoTargetConfig.MAX_YAW_FROM_MOUNT_FACING.get().floatValue();
+        if (maxOffset >= 180.0f) return new YawClampResult(wantedYaw, false); // лимит снят — полный круг разрешён
+
+        float facingYaw = getContraptionDirection().toYRot();
+        float offset     = angleDiff(wantedYaw, facingYaw); // (wantedYaw - facingYaw), нормализовано в [-180,180]
+        if (offset > maxOffset) {
+            float clamped = facingYaw + maxOffset;
+            LOGGER.debug("[YawClamp] pos={} wantedYaw={} facingYaw={} offset={} maxOffset={} -> clamped={} UNREACHABLE",
+                    worldPosition, wantedYaw, facingYaw, offset, maxOffset, clamped);
+            return new YawClampResult(clamped, true);
+        }
+        if (offset < -maxOffset) {
+            float clamped = facingYaw - maxOffset;
+            LOGGER.debug("[YawClamp] pos={} wantedYaw={} facingYaw={} offset={} maxOffset={} -> clamped={} UNREACHABLE",
+                    worldPosition, wantedYaw, facingYaw, offset, maxOffset, clamped);
+            return new YawClampResult(clamped, true);
+        }
+        return new YawClampResult(wantedYaw, false);
+    }
+
 
     private Vec3 getControllerWorldPos() {
         Vec3 local = Vec3.atCenterOf(worldPosition);
