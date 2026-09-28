@@ -156,6 +156,13 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     @Nullable private AssemblyException lastAssemblyException = null;
     /** Позиция казённика, из которого собран текущий контрапшен — нужна для resetContraptionToOffset(). */
     @Nullable private BlockPos assembledFromPos = null;
+    // Грань Controller'а, к которой примонтирован казённик (assembledFromPos
+    // relative к worldPosition). Это и есть настоящая "сторона крепления" для
+    // clampYawToMountFacing() — в отличие от mountedCannon.initialOrientation(),
+    // которая описывает внутреннюю ориентацию структуры казённика и может не
+    // совпадать с гранью Controller'а (см. assembleCannon()). Сохраняется в NBT,
+    // т.к. assembledFromPos сам не переживает перезагрузку мира.
+    @Nullable private Direction mountFacing = null;
     /** Редстоун на предыдущем тике — фронт запускает попытку сборки/разборки. */
     private boolean prevAssemblyPowered = false;
 
@@ -1207,6 +1214,22 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         boolean pitchOk = !allowVertical
                 || Math.abs(wantedPitch - currentPitch) < BallisticSolver.PITCH_TOLERANCE;
 
+        // Командер, в отличие от обычных entity-целей, не проходит через
+        // scanForTarget() и его LOS-проверку кандидатов — попадает сюда
+        // напрямую из scanForCommanderTargets() без raycast. Без этой
+        // проверки пушка стреляла по командеру сквозь стены/рельеф даже
+        // тогда, когда та же самая преграда блокировала LOS ко всем прочим
+        // целям (см. hasLineOfSightToEntity в scanForTarget) — из-за чего
+        // казалось, будто с маской "все цели" пушка атакует только вражеских
+        // командеров, игнорируя остальных.
+        boolean commanderLos = controllerSubLevel != null
+                ? LineOfSightUtil.hasLineOfSightFromSubLevel(controllerSubLevel, muzzle, targetPos)
+                : LineOfSightUtil.hasLineOfSight(level, muzzle, targetPos);
+        if (!commanderLos) {
+            alignedTicks = 0;
+            return;
+        }
+
         if (fireCooldown > 0) fireCooldown--;
         alignedTicks = (yawOk && pitchOk) ? alignedTicks + 1 : 0;
 
@@ -1362,8 +1385,13 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     private YawClampResult clampYawToMountFacing(float wantedYaw) {
         float maxOffset = CBCAutoTargetConfig.MAX_YAW_FROM_MOUNT_FACING.get().floatValue();
         if (maxOffset >= 180.0f) return new YawClampResult(wantedYaw, false); // лимит снят — полный круг разрешён
+        // Пушка на верхней/нижней грани Controller'а не имеет горизонтального курса
+        // монтажа: atan2(stepZ, stepX) для UP/DOWN даёт 0° (= "восток") и сектор
+        // ±maxOffset навсегда центрировался на востоке, отсекая цели с запада как
+        // UNREACHABLE. Ограничение "не разворачиваться за блок" тут не применимо.
+        if (getMountFacing().getAxis().isVertical()) return new YawClampResult(wantedYaw, false);
 
-        float facingYaw = directionToAtanYawDeg(getContraptionDirection());
+        float facingYaw = directionToAtanYawDeg(getMountFacing());
         float offset     = angleDiff(wantedYaw, facingYaw); // (wantedYaw - facingYaw), нормализовано в [-180,180]
         if (offset > maxOffset) {
             float clamped = facingYaw + maxOffset;
@@ -1397,11 +1425,24 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         return (controllerSubLevel != null) ? SableCompat.toWorldPos(controllerSubLevel, local) : local;
     }
 
+    // LOS-раскаст всегда должен стартовать из точки, физически находящейся
+    // в открытом воздухе перед стволом, а не внутри блоков самого казённика.
+    // BARREL_LENGTH=0 ("считать от центра mount") давал в качестве muzzle
+    // c.position() — это bottom-center блока казённика (см. resetContraptionToOffset()/
+    // setPos(Vec3.atBottomCenterOf(offsetPos))), т.е. точку ВНУТРИ собственной
+    // геометрии пушки. Raycast, стартующий изнутри solid-блока, почти всегда
+    // сразу же попадает в этот же блок и возвращает MISS==false для АБСОЛЮТНО
+    // любого направления и дистанции — что выглядело как "пушка не видит ни
+    // одну цель", хотя между стволом и целями чистый воздух. Гарантируем
+    // минимальный вынос точки вперёд по стволу независимо от игрового значения
+    // BARREL_LENGTH (которое влияет только на баллистику/визуал, а не на то,
+    // находится ли точка внутри собственного корпуса).
+    private static final double MIN_MUZZLE_OFFSET = 1.0;
+
     private Vec3 computeRealMuzzlePos(PitchOrientedContraptionEntity c) {
         Vec3 base = c.position();
         if (controllerSubLevel != null) base = SableCompat.toWorldPos(controllerSubLevel, base);
-        double len = CBCAutoTargetConfig.BARREL_LENGTH.get();
-        if (len <= 0.0) return base;
+        double len = Math.max(CBCAutoTargetConfig.BARREL_LENGTH.get(), MIN_MUZZLE_OFFSET);
         // c.pitch is raw (CBC internal). For inverted cannons (sgn=-1) the physical
         // barrel direction is opposite to raw pitch, so we must use worldPitch = raw * sgn.
         float sgn = getContraptionSign();
@@ -1560,6 +1601,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
             this.running = true;
             this.lastAssemblyException = null;
             this.assembledFromPos = assemblyPos;
+            this.mountFacing = dir; // сторона Controller'а, а не внутренняя ориентация структуры
             resetContraptionToOffset();
             level.addFreshEntity(contraptionEntity);
             setChanged();
@@ -1620,6 +1662,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         running = false;
         mountedContraption = null;
         assembledFromPos = null;
+        mountFacing = null;
         setChanged();
     }
 
@@ -1701,6 +1744,18 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
 
     private Direction getContraptionDirection() {
         return mountedContraption == null ? Direction.NORTH : mountedContraption.getInitialOrientation();
+    }
+
+    /**
+     * Сторона Controller'а, к которой примонтирован казённик. Используется
+     * clampYawToMountFacing() как ось арки допустимых углов — в отличие от
+     * getContraptionDirection() (внутренняя ориентация структуры казённика,
+     * не обязательно совпадающая с гранью Controller'а). mountFacing == null
+     * только для старых сохранений до этого фикса — тогда откатываемся на
+     * прежнее поведение, чтобы не ломать существующие миры новым NPE.
+     */
+    private Direction getMountFacing() {
+        return mountFacing != null ? mountFacing : getContraptionDirection();
     }
 
     private void tryTransferToCannon(Level level) {
@@ -2028,6 +2083,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         tag.putBoolean("AllowHorizontal", allowHorizontal);
         tag.putBoolean("AllowVertical",   allowVertical);
         tag.putInt("FireFrequency", fireFrequency);
+        if (mountFacing != null) tag.putInt("MountFacing", mountFacing.get3DDataValue());
         filterData.saveToNBT(tag);
     }
 
@@ -2075,6 +2131,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
         ownerCommanderUUID = tag.hasUUID("OwnerCommanderUUID") ? tag.getUUID("OwnerCommanderUUID")            : null;
         allowHorizontal    = !tag.contains("AllowHorizontal") || tag.getBoolean("AllowHorizontal");
         allowVertical      = !tag.contains("AllowVertical")   || tag.getBoolean("AllowVertical");
+        mountFacing        = tag.contains("MountFacing") ? Direction.from3DDataValue(tag.getInt("MountFacing")) : null;
         fireFrequency      = tag.contains("FireFrequency") ? tag.getInt("FireFrequency") : 0;
         filterData.loadFromNBT(tag);
         subLevelCacheTimer = SUBLEVEL_CACHE_INTERVAL;
