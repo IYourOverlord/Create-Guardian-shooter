@@ -20,6 +20,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
 import net.minecraft.world.MenuProvider;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -531,9 +532,9 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
 
     // ── Inlined Yaw logic ─────────────────────────────────────────────────────
     private void tickYaw(PitchOrientedContraptionEntity mount) {
-        double currentYaw = wrap360(mount.yaw);
-        double desiredYaw = wrap360(targetYaw);
-        double diff       = shortestYawDelta(currentYaw, desiredYaw);
+        double currentYaw = Mth.wrapDegrees(mount.yaw);
+        double desiredYaw = Mth.wrapDegrees(targetYaw);
+        double diff       = Mth.wrapDegrees(desiredYaw - currentYaw);
         boolean snapped   = Math.abs(diff) <= YAW_DEADBAND_DEG;
 
         if (snapped) {
@@ -541,18 +542,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
             yawDirty = false;
         } else {
             double step = Math.min(Math.abs(diff), YAW_MAX_DEG_PER_TICK) * Math.signum(diff);
-            setYaw((float) wrap360(currentYaw + step));
+            setYaw((float) Mth.wrapDegrees(currentYaw + step));
         }
-    }
-
-    private static double wrap360(double deg) {
-        deg %= 360.0;
-        if (deg < 0.0) deg += 360.0;
-        return deg;
-    }
-
-    private static double shortestYawDelta(double from, double to) {
-        return (to - from + 540.0) % 360.0 - 180.0;
     }
 
     // ── Inlined Pitch logic ───────────────────────────────────────────────────
@@ -1315,143 +1306,72 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
      * cannonPitch — логическая (мировая) величина, поэтому sgn тут не участвует
      * (см. историю правок worldMaxDepression/worldMaxElevation).
      */
-    private static float worldMaxDepression(PitchOrientedContraptionEntity c, float sgn) {
+    /** 45° clearance past the controller block for vertical mounts. */
+    private static final float VERTICAL_MOUNT_CLEARANCE = 45.0f;
+
+    private float worldMaxDepression(PitchOrientedContraptionEntity c, float sgn) {
+        Direction mount = getMountFacing();
+        if (mount == Direction.UP) {
+            // Cannon above controller — allow 45° depression past horizontal
+            return VERTICAL_MOUNT_CLEARANCE;
+        } else if (mount == Direction.DOWN) {
+            return 90.0f;
+        }
         return CBCAutoTargetConfig.MAX_PITCH_DEPRESSION.get().floatValue();
     }
 
-    /** @see #worldMaxDepression */
-    private static float worldMaxElevation(PitchOrientedContraptionEntity c, float sgn) {
+    private float worldMaxElevation(PitchOrientedContraptionEntity c, float sgn) {
+        Direction mount = getMountFacing();
+        if (mount == Direction.DOWN) {
+            // Cannon below controller — allow 45° elevation past horizontal
+            return VERTICAL_MOUNT_CLEARANCE;
+        } else if (mount == Direction.UP) {
+            return 90.0f;
+        }
         return CBCAutoTargetConfig.MAX_PITCH_ELEVATION.get().floatValue();
     }
 
-    /**
-     * Результат ограничения wantedYaw сектором стороны крепления.
-     * unreachable=true означает, что реальный требуемый угол лежит вне
-     * допустимого сектора — clampedYaw в этом случае лишь "упирается" в
-     * границу сектора, а НЕ является направлением на настоящую цель, и
-     * поэтому не должен использоваться как основание для разрешения на
-     * выстрел (см. clampYawToMountFacing()).
-     */
     private record YawClampResult(float clampedYaw, boolean unreachable) {}
 
-    /**
-     * Ограничивает wantedYaw сектором вокруг направления стороны крепления
-     * пушки (directionToAtanYawDeg(getContraptionDirection())), не давая ей
-     * развернуться "назад" сквозь собственный блок Controller/платформу.
-     *
-     * depression/elevation (см. worldMaxDepression/worldMaxElevation) ограничивают
-     * только ВЕЛИЧИНУ наклона ствола, но никак не мешают ему довернуться по
-     * горизонтали на произвольный угол — т.к. mountedContraption.pitch/yaw
-     * выставляются нами напрямую в applyRotation()/tickYaw()/tickPitch(), в обход
-     * штатной кинетики/коллизий Create, которые в ванильном CBC физически не
-     * дают turntable провернуться сквозь то, что его держит. Без этого клампа
-     * пушка, смонтированная сбоку блока, может навестись на цель позади себя,
-     * визуально проходя стволом сквозь Controller (см. диагностику с
-     * логами/скриншотом — wantedYaw уходил в область ±180°, а не ограничивался
-     * полусферой "перед" стороной крепления).
-     *
-     * ВАЖНО: когда реальный требуемый угол лежит вне сектора, clampedYaw —
-     * это НЕ направление на цель, а просто ближайшая достижимая граница.
-     * Раньше (первая версия клампа) это приводило к тому, что ствол доворачивался
-     * до границы сектора, c.yaw совпадал с clampedYaw, yawOk становился true,
-     * и пушка стреляла в сторону границы клампа, а не в сторону цели —
-     * то есть открывала огонь, физически не имея возможности попасть (см.
-     * диагностику: [YawClamp] ... clamped=180.0, повторяющийся десятки тиков
-     * подряд с одним и тем же offset, притом что цель оставалась недостижимой).
-     * Поэтому вызывающий код обязан проверять unreachable и не выдавать
-     * разрешение на огонь, пока цель вне сектора — см. использование в
-     * aimAndFireAtEntity()/aimAndFireAtCommander().
-     *
-     /**
-     * wantedYaw здесь в "атан"-конвенции BallisticSolver (atan2(dZ, dX): East=0°,
-     * South=90°, West=180°, North=-90°/270°, растёт против часовой при виде
-     * сверху) — той же, что и c.yaw (mountedContraption.yaw), т.к. tickYaw()
-     * пишет туда именно wantedYaw без какой-либо конвертации, а
-     * computeRealMuzzlePos() читает c.yaw обратно в векторы той же формулой
-     * (-c.yaw + 90°, cos/sin). Это НЕ то же самое, что Direction.toYRot() —
-     * тот использует стандартную Minecraft-конвенцию (South=0°, растёт по
-     * часовой). Раньше здесь facingYaw брался напрямую из toYRot() в
-     * предположении, что базисы совпадают — предположение было неверным.
-     * Вдоль оси Z (NORTH/SOUTH) обе конвенции по случайности почти совпадают
-     * по знаку, поэтому клампинг казался рабочим спереди/сзади, но вдоль оси
-     * X (EAST/WEST, т.е. когда пушка примонтирована СБОКУ от Controller'а)
-     * они расходятся на 90° со сменой знака — сектор "куда можно целиться"
-     * разворачивался в неверную сторону и переставал закрывать направление
-     * на сам Controller, из-за чего пушка доворачивалась на собственный
-     * блок Controller и расстреливала его. Конвертируем facingYaw в ту же
-     * атан-конвенцию через atan2(dir.getStepZ(), dir.getStepX()), чтобы
-     * сравнение offset = wantedYaw - facingYaw было корректным в обеих осях.
-     */
     private YawClampResult clampYawToMountFacing(float wantedYaw) {
         float maxOffset = CBCAutoTargetConfig.MAX_YAW_FROM_MOUNT_FACING.get().floatValue();
-        if (maxOffset >= 180.0f) return new YawClampResult(wantedYaw, false); // лимит снят — полный круг разрешён
-        // Пушка на верхней/нижней грани Controller'а не имеет горизонтального курса
-        // монтажа: atan2(stepZ, stepX) для UP/DOWN даёт 0° (= "восток") и сектор
-        // ±maxOffset навсегда центрировался на востоке, отсекая цели с запада как
-        // UNREACHABLE. Ограничение "не разворачиваться за блок" тут не применимо.
-        if (getMountFacing().getAxis().isVertical()) return new YawClampResult(wantedYaw, false);
+        if (maxOffset >= 180.0f) return new YawClampResult(wantedYaw, false);
+        Direction mount = getMountFacing();
+        if (mount.getAxis().isVertical()) return new YawClampResult(wantedYaw, false);
 
-        float facingYaw = directionToAtanYawDeg(getMountFacing());
-        float offset     = angleDiff(wantedYaw, facingYaw); // (wantedYaw - facingYaw), нормализовано в [-180,180]
+        float facingYaw = mount.toYRot();
+        float offset    = angleDiff(wantedYaw, facingYaw);
         if (offset > maxOffset) {
-            float clamped = facingYaw + maxOffset;
-            LOGGER.debug("[YawClamp] pos={} wantedYaw={} facingYaw={} offset={} maxOffset={} -> clamped={} UNREACHABLE",
-                    worldPosition, wantedYaw, facingYaw, offset, maxOffset, clamped);
+            float clamped = (float) Mth.wrapDegrees(facingYaw + maxOffset);
             return new YawClampResult(clamped, true);
         }
         if (offset < -maxOffset) {
-            float clamped = facingYaw - maxOffset;
-            LOGGER.debug("[YawClamp] pos={} wantedYaw={} facingYaw={} offset={} maxOffset={} -> clamped={} UNREACHABLE",
-                    worldPosition, wantedYaw, facingYaw, offset, maxOffset, clamped);
+            float clamped = (float) Mth.wrapDegrees(facingYaw - maxOffset);
             return new YawClampResult(clamped, true);
         }
         return new YawClampResult(wantedYaw, false);
     }
-
-    /**
-     * Направление в "атан"-конвенции BallisticSolver: atan2(dZ, dX) в градусах
-     * (East=0°, South=90°, West=180°/-180°, North=-90°). См. пояснение у
-     * clampYawToMountFacing() — эта конвенция отличается от стандартного
-     * Direction.toYRot() (Minecraft: South=0°, растёт по часовой) и её
-     * нельзя заменять последним для горизонтальных направлений.
-     */
-    private static float directionToAtanYawDeg(Direction dir) {
-        return (float) Math.toDegrees(Math.atan2(dir.getStepZ(), dir.getStepX()));
-    }
-
 
     private Vec3 getControllerWorldPos() {
         Vec3 local = Vec3.atCenterOf(worldPosition);
         return (controllerSubLevel != null) ? SableCompat.toWorldPos(controllerSubLevel, local) : local;
     }
 
-    // LOS-раскаст всегда должен стартовать из точки, физически находящейся
-    // в открытом воздухе перед стволом, а не внутри блоков самого казённика.
-    // BARREL_LENGTH=0 ("считать от центра mount") давал в качестве muzzle
-    // c.position() — это bottom-center блока казённика (см. resetContraptionToOffset()/
-    // setPos(Vec3.atBottomCenterOf(offsetPos))), т.е. точку ВНУТРИ собственной
-    // геометрии пушки. Raycast, стартующий изнутри solid-блока, почти всегда
-    // сразу же попадает в этот же блок и возвращает MISS==false для АБСОЛЮТНО
-    // любого направления и дистанции — что выглядело как "пушка не видит ни
-    // одну цель", хотя между стволом и целями чистый воздух. Гарантируем
-    // минимальный вынос точки вперёд по стволу независимо от игрового значения
-    // BARREL_LENGTH (которое влияет только на баллистику/визуал, а не на то,
-    // находится ли точка внутри собственного корпуса).
     private static final double MIN_MUZZLE_OFFSET = 1.0;
 
     private Vec3 computeRealMuzzlePos(PitchOrientedContraptionEntity c) {
-        Vec3 base = c.position();
-        if (controllerSubLevel != null) base = SableCompat.toWorldPos(controllerSubLevel, base);
         double len = Math.max(CBCAutoTargetConfig.BARREL_LENGTH.get(), MIN_MUZZLE_OFFSET);
-        // c.pitch is raw (CBC internal). For inverted cannons (sgn=-1) the physical
-        // barrel direction is opposite to raw pitch, so we must use worldPitch = raw * sgn.
-        float sgn = getContraptionSign();
-        double yawRad   = Math.toRadians(-c.yaw + 90.0);
-        double pitchRad = Math.toRadians(c.pitch * sgn);   // world-space pitch
-        double cosP = Math.cos(pitchRad);
-        return base.add(cosP * Math.cos(yawRad) * len,
-                Math.sin(pitchRad) * len,
-                cosP * Math.sin(yawRad) * len);
+        Direction dir = c.getInitialOrientation();
+        Vec3 localMuzzle = Vec3.atCenterOf(BlockPos.ZERO).add(
+                dir.getStepX() * len,
+                dir.getStepY() * len,
+                dir.getStepZ() * len
+        );
+        Vec3 worldMuzzle = c.toGlobalVector(localMuzzle, 0);
+        if (controllerSubLevel != null && SableCompat.isAvailable()) {
+            worldMuzzle = SableCompat.toWorldPos(controllerSubLevel, worldMuzzle);
+        }
+        return worldMuzzle;
     }
 
     private Vec3 getPlatformVelocity() {
@@ -1670,20 +1590,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
     private void resetContraptionToOffset() {
         if (mountedContraption == null) return;
         cannonPitch     = 0;
-        // ВАЖНО: cannonYaw/mountedContraption.yaw живут в "атан"-конвенции
-        // BallisticSolver (East=0°, растёт против часовой — см. пояснение
-        // у clampYawToMountFacing()/directionToAtanYawDeg()), а НЕ в
-        // стандартной Minecraft-конвенции Direction.toYRot() (South=0°,
-        // растёт по часовой). Именно mountedContraption.yaw/prevYaw реально
-        // управляет визуальным поворотом модели (см. комментарий в
-        // applyRotation(): рендер контрапшена берёт угол через
-        // getViewYRot(), который интерполирует prevYaw/yaw, а не
-        // getYRot()/yRotO). Использование toYRot() здесь означало, что
-        // сразу после сборки ствол физически ориентировался по чужой
-        // системе координат — для граней вдоль оси Z (NORTH/SOUTH) это
-        // почти не было заметно, а для боковых граней (EAST/WEST) пушка
-        // стартовала развёрнутой на 90° не в ту сторону.
-        cannonYaw       = directionToAtanYawDeg(getContraptionDirection());
+        cannonYaw       = getContraptionDirection().toYRot();
         prevCannonPitch = cannonPitch;
         prevCannonYaw   = cannonYaw;
 

@@ -27,7 +27,7 @@ public class BallisticSolver {
             double dY = delta.y;
             double horizDist = Math.sqrt(dX * dX + dZ * dZ);
 
-            double yawRad = Math.atan2(dZ, dX);
+            double yawRad = Math.atan2(-dX, dZ);
             yawDeg = Math.toDegrees(yawRad);
 
             // solvePitch возвращает радианы или null
@@ -171,7 +171,7 @@ public class BallisticSolver {
         double dY = delta.y;
         double horizDist = Math.sqrt(dX * dX + dZ * dZ);
 
-        double yawRad = Math.atan2(dZ, dX);
+        double yawRad = Math.atan2(-dX, dZ);
         double yawDeg = Math.toDegrees(yawRad);
 
         Double pitchRad = solvePitch(horizDist, dY, muzzleSpeed, gravity, drag);
