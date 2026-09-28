@@ -1,10 +1,12 @@
 package com.yourname.cbcautotarget.util;
 
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3d;
@@ -120,5 +122,33 @@ public final class LineOfSightUtil {
         );
         HitResult hit = level.clip(ctx);
         return hit.getType() == HitResult.Type.MISS;
+    }
+
+    /**
+     * Raycast до конкретного БЛОКА (например, командера). Луч заканчивается в центре
+     * целевого блока, поэтому обычный {@link #hasLineOfSight} всегда упирался в сам
+     * этот блок и возвращал false. Здесь попадание в целевой блок считается успехом,
+     * а любое другое препятствие — блокировкой видимости.
+     *
+     * @param targetBlock позиция целевого блока в системе координат {@code level}
+     */
+    public static boolean hasLineOfSightToBlock(Level level, Vec3 from, Vec3 to, BlockPos targetBlock) {
+        ClipContext ctx = new ClipContext(
+                from, to,
+                ClipContext.Block.COLLIDER,
+                ClipContext.Fluid.NONE,
+                net.minecraft.world.phys.shapes.CollisionContext.empty());
+        HitResult hit = level.clip(ctx);
+        if (hit.getType() == HitResult.Type.MISS) return true;
+        return hit instanceof BlockHitResult bhr && bhr.getBlockPos().equals(targetBlock);
+    }
+
+    /** Вариант {@link #hasLineOfSightToBlock} для контроллера на sublevel (мировые → локальные координаты). */
+    public static boolean hasLineOfSightToBlockFromSubLevel(ServerSubLevel subLevel, Vec3 worldMuzzle,
+                                                            Vec3 worldTarget, BlockPos targetLocalBlock) {
+        return hasLineOfSightToBlock(subLevel.getLevel(),
+                worldToLocal(subLevel, worldMuzzle),
+                worldToLocal(subLevel, worldTarget),
+                targetLocalBlock);
     }
 }

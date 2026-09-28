@@ -83,6 +83,9 @@ public class CommanderBlockEntity extends BlockEntity implements MenuProvider {
      * сравнивать их через getBlockPos() напрямую некорректно, так как это
      * координаты в разных локальных системах отсчёта.
      */
+    /** Sublevel, на котором стоит командер, или null если он в основном мире. */
+    @Nullable public ServerSubLevel getCommanderSubLevel() { return commanderSubLevel; }
+
     public Vec3 getWorldPos() {
         return (commanderSubLevel != null)
                 ? SableCompat.toWorldPos(commanderSubLevel, Vec3.atCenterOf(worldPosition))
