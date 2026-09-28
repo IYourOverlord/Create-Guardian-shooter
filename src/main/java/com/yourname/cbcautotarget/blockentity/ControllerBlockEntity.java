@@ -52,8 +52,10 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public class ControllerBlockEntity extends BlockEntity implements MenuProvider, ControlPitchContraption.Block {
@@ -174,6 +176,26 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
             this.assembledFromPos = assembledFromPos;
         }
 
+        /**
+         * Стартовые углы нового MountState. Раньше MountState, созданный из attach()
+         * (клиент, либо сервер после перезагрузки мира), стартовал с yaw=0/pitch=0 —
+         * клиентский applyRotation() тут же выставлял контрапшену этот нулевой угол,
+         * и ВСЕ такие пушки визуально смотрели в одну сторону, хотя сервер стрелял
+         * по настоящим углам. Теперь берём сохранённые/присланные углы, иначе
+         * реальные углы самого контрапшена.
+         */
+        void initAngles(@Nullable float[] saved) {
+            if (saved != null) {
+                cannonYaw = saved[0];
+                cannonPitch = saved[1];
+            } else if (contraption != null) {
+                cannonYaw = contraption.yaw;
+                cannonPitch = contraption.pitch * getContraptionSign();
+            }
+            prevCannonYaw = cannonYaw;
+            prevCannonPitch = cannonPitch;
+        }
+
         void invalidateEntityAimCache() {
             entityAimCache = null;
             entityAimCacheMuzzle = null;
@@ -225,6 +247,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
 
     /** All currently assembled cannons. Empty when no cannon is assembled. */
     private final List<MountState> mounts = new ArrayList<>();
+    /** Сохранённые/присланные углы по грани контроллера — для MountState, создаваемых позже в attach(). */
+    private final Map<Direction, float[]> pendingMountAngles = new EnumMap<>(Direction.class);
 
     private boolean running = false;
     @Nullable private AssemblyException lastAssemblyException = null;
@@ -1273,12 +1297,16 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
             if (matched.mountFacing == null) matched.mountFacing = dir;
             if (matched.assembledFromPos == null) matched.assembledFromPos = anchor;
         } else {
-            mounts.add(new MountState(contraption, dir, anchor));
+            MountState created = new MountState(contraption, dir, anchor);
+            created.initAngles(dir != null ? pendingMountAngles.get(dir) : null);
+            mounts.add(created);
         }
 
         if (level != null && !level.isClientSide) {
             this.running = true;
             setChanged();
+            // Сообщаем клиентам о новом mount и его реальных углах.
+            level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
         }
     }
 
@@ -1359,6 +1387,7 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
             setChanged();
 
             AllSoundEvents.CONTRAPTION_ASSEMBLE.playOnServer(level, pos);
+            level.sendBlockUpdated(pos, getBlockState(), getBlockState(), 3);
             // Do NOT return — continue checking remaining faces
         }
     }
@@ -1754,6 +1783,8 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
             CompoundTag mt = new CompoundTag();
             if (ms.mountFacing != null) mt.putInt("MountFacing", ms.mountFacing.get3DDataValue());
             if (ms.assembledFromPos != null) mt.putLong("AssembledFromPos", ms.assembledFromPos.asLong());
+            mt.putFloat("CannonYaw",   ms.cannonYaw);
+            mt.putFloat("CannonPitch", ms.cannonPitch);
             mountsList.add(mt);
         }
         tag.put("Mounts", mountsList);
@@ -1776,23 +1807,29 @@ public class ControllerBlockEntity extends BlockEntity implements MenuProvider, 
                 BlockPos assembledPos = mt.contains("AssembledFromPos") ? BlockPos.of(mt.getLong("AssembledFromPos")) : null;
                 int contraptionId = mt.contains("ContraptionId") ? mt.getInt("ContraptionId") : -1;
 
+                // Строгое сопоставление: сначала по id контрапшена, затем по грани
+                // (одна пушка на грань), затем по позиции казённика. Никакого
+                // «по индексу в списке» — при разном порядке на клиенте и сервере
+                // это записывало углы одной пушки в другую.
                 MountState target = null;
-                for (MountState ms : mounts) {
-                    if (contraptionId != -1 && ms.contraption != null && ms.contraption.getId() == contraptionId) {
-                        target = ms;
-                        break;
-                    }
-                    if (facing != null && ms.mountFacing == facing) {
-                        target = ms;
-                        break;
-                    }
-                    if (assembledPos != null && assembledPos.equals(ms.assembledFromPos)) {
-                        target = ms;
-                        break;
+                if (contraptionId != -1) {
+                    for (MountState ms : mounts) {
+                        if (ms.contraption != null && ms.contraption.getId() == contraptionId) { target = ms; break; }
                     }
                 }
-                if (target == null && i < mounts.size()) {
-                    target = mounts.get(i);
+                if (target == null && facing != null) {
+                    for (MountState ms : mounts) {
+                        if (ms.mountFacing == facing) { target = ms; break; }
+                    }
+                }
+                if (target == null && assembledPos != null) {
+                    for (MountState ms : mounts) {
+                        if (assembledPos.equals(ms.assembledFromPos)) { target = ms; break; }
+                    }
+                }
+                if (target == null && facing != null && mt.contains("CannonYaw") && mt.contains("CannonPitch")) {
+                    // MountState ещё не создан (attach() придёт позже) — запоминаем углы.
+                    pendingMountAngles.put(facing, new float[]{mt.getFloat("CannonYaw"), mt.getFloat("CannonPitch")});
                 }
                 if (target == null && level != null && level.isClientSide) {
                     target = new MountState(null, facing, assembledPos);
