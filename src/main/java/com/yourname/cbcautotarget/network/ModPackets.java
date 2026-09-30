@@ -56,6 +56,7 @@ public class ModPackets {
         r.playToServer(SaveMachineSoulVisionPacket.TYPE,   SaveMachineSoulVisionPacket.CODEC,   SaveMachineSoulVisionPacket::handle);
         r.playToServer(SaveMachineSoulMovePacket.TYPE,     SaveMachineSoulMovePacket.CODEC,     SaveMachineSoulMovePacket::handle);
         r.playToServer(SaveMachineSoulActionPacket.TYPE,   SaveMachineSoulActionPacket.CODEC,   SaveMachineSoulActionPacket::handle);
+        r.playToServer(BeginSoulDirectBindPacket.TYPE,     BeginSoulDirectBindPacket.CODEC,     BeginSoulDirectBindPacket::handle);
 
         // MachineSoul — сервер → клиент
         r.playToClient(SyncMachineSoulStatusPacket.TYPE, SyncMachineSoulStatusPacket.CODEC, SyncMachineSoulStatusPacket::handle);

@@ -11,6 +11,7 @@ import com.yourname.cbcautotarget.filter.TargetFilterData;
 import com.yourname.cbcautotarget.filter.WhitelistMode;
 import com.yourname.cbcautotarget.menu.MachineSoulMenu;
 import com.yourname.cbcautotarget.network.SyncMachineSoulStatusPacket;
+import com.yourname.cbcautotarget.signal.SoulDirectSignals;
 import dev.ryanhcode.sable.api.block.BlockEntitySubLevelActor;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.physics.mass.MassData;
@@ -159,6 +160,11 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
     private final Map<CommandRole, CommandSlot>  slots         = new EnumMap<>(CommandRole.class);
     private final Map<CommandRole, ActiveSignal> activeSignals = new EnumMap<>(CommandRole.class);
+
+    /** Сторона блока-приёмника: смещение от Soul + грань. Смещение сохраняет привязку при переносе конструкции. */
+    public record DirectTarget(BlockPos offset, Direction face) { }
+
+    private final Map<CommandRole, List<DirectTarget>> directTargets = new EnumMap<>(CommandRole.class);
 
     private final Set<UUID> viewingPlayers = new HashSet<>();
 
@@ -384,6 +390,21 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                     level == null ? "null" : level.getClass().getSimpleName(),
                     level != null && level.isClientSide);
         }
+    }
+
+    /** Добавляет или снимает (если уже есть) прямой выход роли на грань блока. true — добавлен. */
+    public boolean toggleDirectTarget(CommandRole role, BlockPos targetPos, Direction face) {
+        DirectTarget target = new DirectTarget(targetPos.subtract(worldPosition), face);
+        List<DirectTarget> list = directTargets.computeIfAbsent(role, r -> new ArrayList<>());
+        boolean added = !list.remove(target);
+        if (added) list.add(target);
+        if (list.isEmpty()) directTargets.remove(role);
+        deactivateSignal(role);
+        setChanged();
+        if (level != null && !level.isClientSide) {
+            level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+        }
+        return added;
     }
 
     public void clearSlot(CommandRole role) {
@@ -768,7 +789,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         gyroHasObservedTick = true;
 
         double tiltError = Math.atan2(errorAxisWorld.length(), currentUpWorld.dot(worldUp));
-        gyroDebugLog(() -> String.format(java.util.Locale.ROOT,
+        gyroDebugLog(() -> String.format(Locale.ROOT,
                 "tilt=%.4f yawRate=%.4f inertia=%.3f kp=%.3f kd=%.3f impulse=(%.4f,%.4f,%.4f) disturbance=(%.4f,%.4f,%.4f)",
                 tiltError, yawRate, inertia, kp, kd,
                 restoringImpulseLocal.x, restoringImpulseLocal.y, restoringImpulseLocal.z,
@@ -1157,7 +1178,18 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         else deactivateSignal(role);
     }
 
+    private void activateDirectTargets(CommandRole role, ServerLevel sl) {
+        List<DirectTarget> targets = directTargets.get(role);
+        if (targets == null || SoulDirectSignals.isActive(sl, worldPosition, role)) return;
+        List<SoulDirectSignals.Face> faces = new ArrayList<>(targets.size());
+        for (DirectTarget t : targets) {
+            faces.add(SoulDirectSignals.Face.of(worldPosition.offset(t.offset()), t.face()));
+        }
+        SoulDirectSignals.activate(sl, worldPosition, role, faces);
+    }
+
     private void activateSignal(CommandRole role, ServerLevel sl) {
+        activateDirectTargets(role, sl);
         CommandSlot slot = slots.get(role);
         if (!slot.isAssigned()) return;
         Couple<Frequency> freq = slot.toFrequency();
@@ -1180,6 +1212,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     }
 
     private void deactivateSignal(CommandRole role) {
+        if (level != null) SoulDirectSignals.deactivate(level, worldPosition, role);
         ActiveSignal signal = activeSignals.remove(role);
         if (signal == null) return;
         signal.kill();
@@ -1391,6 +1424,35 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         ListTag slotsTag = new ListTag();
         for (CommandSlot slot : slots.values()) slotsTag.add(slot.save(registries));
         tag.put("CommandSlots", slotsTag);
+        ListTag directTag = new ListTag();
+        directTargets.forEach((role, list) -> {
+            for (DirectTarget t : list) {
+                CompoundTag e = new CompoundTag();
+                e.putString("Role", role.name());
+                e.putInt("X", t.offset().getX());
+                e.putInt("Y", t.offset().getY());
+                e.putInt("Z", t.offset().getZ());
+                e.putByte("Face", (byte) t.face().get3DDataValue());
+                directTag.add(e);
+            }
+        });
+        tag.put("DirectTargets", directTag);
+    }
+
+    private void loadDirectTargets(ListTag directTag) {
+        directTargets.clear();
+        for (int i = 0; i < directTag.size(); i++) {
+            CompoundTag e = directTag.getCompound(i);
+            CommandRole role;
+            try {
+                role = CommandRole.valueOf(e.getString("Role"));
+            } catch (IllegalArgumentException ex) {
+                continue;
+            }
+            directTargets.computeIfAbsent(role, r -> new ArrayList<>()).add(new DirectTarget(
+                    new BlockPos(e.getInt("X"), e.getInt("Y"), e.getInt("Z")),
+                    Direction.from3DDataValue(e.getByte("Face"))));
+        }
     }
 
     private void loadSlotsFromTag(CompoundTag tag, HolderLookup.Provider registries) {
@@ -1410,6 +1472,9 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                 }
                 CommandSlot slot = CommandSlot.load(entry, registries);
                 slots.put(slot.role, slot);
+            }
+            if (tag.contains("DirectTargets", Tag.TAG_LIST)) {
+                loadDirectTargets(tag.getList("DirectTargets", Tag.TAG_COMPOUND));
             }
         }
     }

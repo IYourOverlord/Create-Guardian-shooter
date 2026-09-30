@@ -117,5 +117,10 @@
   "gui.cbc_autotarget.soul.player_filter.follow": "Escort",
   "gui.cbc_autotarget.soul.player_filter.hint.target": "Attack only listed players",
   "gui.cbc_autotarget.soul.player_filter.hint.ignore": "Ignore listed players, attack all others",
-  "gui.cbc_autotarget.soul.player_filter.hint.follow": "Escort listed; switch to enemies if nearby"
+  "gui.cbc_autotarget.soul.player_filter.hint.follow": "Escort listed; switch to enemies if nearby",
+  "gui.cbc_autotarget.soul.direct.tooltip": "Output redstone to a block side: close the menu, then right-click a block side with an empty hand",
+  "gui.cbc_autotarget.soul.direct.start": "%s: right-click a block side with an empty hand",
+  "gui.cbc_autotarget.soul.direct.bound": "%s: redstone output bound to block side",
+  "gui.cbc_autotarget.soul.direct.unbound": "%s: redstone output removed from block side",
+  "gui.cbc_autotarget.soul.direct.cancelled": "Redstone output binding cancelled"
 }

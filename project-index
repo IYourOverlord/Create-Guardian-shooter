@@ -49,6 +49,7 @@ Direction client→server (Registered in ModPackets):
 - SaveMachineSoulVisionPacket
 - SaveMachineSoulMovePacket
 - SaveMachineSoulActionPacket
+- BeginSoulDirectBindPacket (Move tab «+» → starts direct redstone bind session)
 - UpdateMachineSoulPlayerFilterPacket
 - UpdateMachineSoulCommanderFilterPacket
 
@@ -94,3 +95,8 @@ Do not remove or move these — required for schematic deploy to preserve BE sta
 
 ## Entity Tags & Datapacks
 - `cbc_autotarget:targeted_entities` (tag file: `data/cbc_autotarget/tags/entity_type/targeted_entities.json`) contains entity types targetable by the auto-target system. For specific modded mobs, they can be added to this tag via a data pack without recompiling the mod.
+
+## Direct redstone output (Machine Soul → block side)
+- Move tab «+» button → BeginSoulDirectBindPacket → event/SoulDirectBindHandler (session per player, 60s) → empty-hand RMB on block side → MachineSoulBlockEntity.toggleDirectTarget(role, pos, face).
+- Targets stored as offset-from-Soul + face in NBT key "DirectTargets" (inside saveSlotsToTag/loadSlotsFromTag, so SafeNbtWriter/schematic paths cover it).
+- Emission: MachineSoulBlockEntity.activateSignal/deactivateSignal → signal/SoulDirectSignals (registry per Level) → mixin/MixinBlockStateBase (inject RETURN of BlockStateBase.getSignal, strength 15). Mixin config: resources/cbc_autotarget.mixins.json, declared in neoforge.mods.toml.

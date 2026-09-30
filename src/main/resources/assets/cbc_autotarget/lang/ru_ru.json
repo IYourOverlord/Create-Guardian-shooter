@@ -117,5 +117,10 @@
   "gui.cbc_autotarget.soul.player_filter.follow": "Сопровождать",
   "gui.cbc_autotarget.soul.player_filter.hint.target": "Атаковать только перечисленных игроков",
   "gui.cbc_autotarget.soul.player_filter.hint.ignore": "Игнорировать перечисленных, атаковать остальных",
-  "gui.cbc_autotarget.soul.player_filter.hint.follow": "Сопровождать перечисленных; переключаться на врагов"
+  "gui.cbc_autotarget.soul.player_filter.hint.follow": "Сопровождать перечисленных; переключаться на врагов",
+  "gui.cbc_autotarget.soul.direct.tooltip": "Редстоун на сторону блока: закройте меню и нажмите ПКМ пустой рукой по стороне блока",
+  "gui.cbc_autotarget.soul.direct.start": "%s: нажмите ПКМ пустой рукой по стороне блока",
+  "gui.cbc_autotarget.soul.direct.bound": "%s: редстоун-выход привязан к стороне блока",
+  "gui.cbc_autotarget.soul.direct.unbound": "%s: редстоун-выход снят со стороны блока",
+  "gui.cbc_autotarget.soul.direct.cancelled": "Привязка редстоун-выхода отменена"
 }
