@@ -8,7 +8,9 @@ import net.minecraft.world.level.Level;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -33,6 +35,7 @@ public final class SoulDirectSignals {
     private static final class LevelState {
         final Map<Emitter, List<Face>> emitters = new HashMap<>();
         final Map<Face, Integer> counts = new ConcurrentHashMap<>();
+        final Map<Long, Set<Face>> bound = new ConcurrentHashMap<>();
     }
 
     private static final Map<Level, LevelState> STATES = Collections.synchronizedMap(new WeakHashMap<>());
@@ -62,6 +65,27 @@ public final class SoulDirectSignals {
         for (Face face : faces) state.counts.computeIfPresent(face, (f, n) -> n > 1 ? n - 1 : null);
         ACTIVE_FACES.addAndGet(-faces.size());
         for (Face face : faces) notifyFace(level, face);
+    }
+
+    /** Полный список привязанных граней Soul (независимо от активности роли). */
+    public static void setBindings(Level level, BlockPos soulPos, Set<Face> faces) {
+        LevelState state = STATES.computeIfAbsent(level, l -> new LevelState());
+        if (faces.isEmpty()) state.bound.remove(soulPos.asLong());
+        else state.bound.put(soulPos.asLong(), Set.copyOf(faces));
+    }
+
+    public static void clearBindings(Level level, BlockPos soulPos) {
+        LevelState state = STATES.get(level);
+        if (state != null) state.bound.remove(soulPos.asLong());
+    }
+
+    /** Позиции всех Soul, у которых эта грань привязана хотя бы к одной роли. */
+    public static List<Long> soulsBoundTo(Level level, Face face) {
+        LevelState state = STATES.get(level);
+        List<Long> result = new ArrayList<>();
+        if (state == null) return result;
+        state.bound.forEach((soul, faces) -> { if (faces.contains(face)) result.add(soul); });
+        return result;
     }
 
     /** consumerPos — блок-потребитель, face — его грань, с которой запрашивается сигнал. */

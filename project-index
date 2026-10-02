@@ -100,3 +100,4 @@ Do not remove or move these — required for schematic deploy to preserve BE sta
 - Move tab «+» button → BeginSoulDirectBindPacket → event/SoulDirectBindHandler (session per player, 60s) → empty-hand RMB on block side → MachineSoulBlockEntity.toggleDirectTarget(role, pos, face).
 - Targets stored as offset-from-Soul + face in NBT key "DirectTargets" (inside saveSlotsToTag/loadSlotsFromTag, so SafeNbtWriter/schematic paths cover it).
 - Emission: MachineSoulBlockEntity.activateSignal/deactivateSignal → signal/SoulDirectSignals (registry per Level) → mixin/MixinBlockStateBase (inject RETURN of BlockStateBase.getSignal, strength 15). Mixin config: resources/cbc_autotarget.mixins.json, declared in neoforge.mods.toml.
+- Unbind: Shift + empty-hand RMB on a bound face → SoulDirectBindHandler.tryUnbind → SoulDirectSignals.soulsBoundTo (registry of bound faces per Soul, kept in sync by MachineSoulBlockEntity.syncBindings) → removeDirectTargetsAt.

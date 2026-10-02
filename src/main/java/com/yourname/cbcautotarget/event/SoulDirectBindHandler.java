@@ -3,6 +3,7 @@ package com.yourname.cbcautotarget.event;
 import com.yourname.cbcautotarget.blockentity.MachineSoulBlockEntity;
 import com.yourname.cbcautotarget.blockentity.MachineSoulBlockEntity.CommandRole;
 import com.yourname.cbcautotarget.compat.SableCompat;
+import com.yourname.cbcautotarget.signal.SoulDirectSignals;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
@@ -46,9 +47,12 @@ public class SoulDirectBindHandler {
         if (event.getHand() != InteractionHand.MAIN_HAND) return;
 
         Session session = SESSIONS.get(sp.getUUID());
-        if (session == null) return;
-        if (sp.level().getGameTime() > session.expiresAt()) {
+        if (session != null && sp.level().getGameTime() > session.expiresAt()) {
             SESSIONS.remove(sp.getUUID());
+            session = null;
+        }
+        if (session == null) {
+            tryUnbind(event, sp);
             return;
         }
         Direction face = event.getFace();
@@ -76,8 +80,33 @@ public class SoulDirectBindHandler {
                 roleName(session.role())), true);
     }
 
+    /** Shift + ПКМ пустой рукой по привязанной грани снимает с неё выходы всех Machine Soul. */
+    private static void tryUnbind(PlayerInteractEvent.RightClickBlock event, ServerPlayer sp) {
+        Direction face = event.getFace();
+        if (face == null || !sp.isShiftKeyDown() || !sp.getMainHandItem().isEmpty()) return;
+
+        BlockPos clicked = event.getPos();
+        int removed = 0;
+        for (long soulKey : SoulDirectSignals.soulsBoundTo(event.getLevel(), SoulDirectSignals.Face.of(clicked, face))) {
+            BlockPos soulPos = BlockPos.of(soulKey);
+            BlockEntity be = event.getLevel().getBlockEntity(soulPos);
+            if (be == null && SableCompat.isAvailable()) {
+                be = SableCompat.findBEInAnyLevel(sp.getServer(), soulPos);
+            }
+            if (!(be instanceof MachineSoulBlockEntity soul)
+                    || (soul.isCreativeLocked() && sp.gameMode.getGameModeForPlayer() != GameType.CREATIVE)) continue;
+            removed += soul.removeDirectTargetsAt(clicked, face);
+        }
+        if (removed == 0) return;
+
+        event.setCanceled(true);
+        event.setCancellationResult(InteractionResult.SUCCESS);
+        sp.displayClientMessage(Component.translatable("gui.cbc_autotarget.soul.direct.removed"), true);
+    }
+
     private static Component roleName(CommandRole role) {
-        return Component.translatable("gui.cbc_autotarget.soul.role."
-                + role.name().substring("MOVE_".length()).toLowerCase(Locale.ROOT));
+        String key = role.name().toLowerCase(Locale.ROOT);
+        if (key.startsWith("move_")) key = key.substring("move_".length());
+        return Component.translatable("gui.cbc_autotarget.soul.role." + key);
     }
 }

@@ -122,5 +122,6 @@
   "gui.cbc_autotarget.soul.direct.start": "%s: нажмите ПКМ пустой рукой по стороне блока",
   "gui.cbc_autotarget.soul.direct.bound": "%s: редстоун-выход привязан к стороне блока",
   "gui.cbc_autotarget.soul.direct.unbound": "%s: редстоун-выход снят со стороны блока",
-  "gui.cbc_autotarget.soul.direct.cancelled": "Привязка редстоун-выхода отменена"
+  "gui.cbc_autotarget.soul.direct.cancelled": "Привязка редстоун-выхода отменена",
+  "gui.cbc_autotarget.soul.direct.removed": "Редстоун-выход Machine Soul снят с этой стороны"
 }

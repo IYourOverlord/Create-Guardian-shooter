@@ -400,11 +400,45 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         if (added) list.add(target);
         if (list.isEmpty()) directTargets.remove(role);
         deactivateSignal(role);
+        syncBindings();
         setChanged();
         if (level != null && !level.isClientSide) {
             level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
         }
         return added;
+    }
+
+    /** Снимает все прямые выходы Soul (любой роли) с указанной грани блока. Возвращает число снятых привязок. */
+    public int removeDirectTargetsAt(BlockPos targetPos, Direction face) {
+        DirectTarget target = new DirectTarget(targetPos.subtract(worldPosition), face);
+        int removed = 0;
+        Iterator<Map.Entry<CommandRole, List<DirectTarget>>> it = directTargets.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<CommandRole, List<DirectTarget>> entry = it.next();
+            if (!entry.getValue().remove(target)) continue;
+            removed++;
+            deactivateSignal(entry.getKey());
+            if (entry.getValue().isEmpty()) it.remove();
+        }
+        if (removed > 0) {
+            syncBindings();
+            setChanged();
+            if (level != null && !level.isClientSide) {
+                level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+            }
+        }
+        return removed;
+    }
+
+    private void syncBindings() {
+        if (level == null || level.isClientSide) return;
+        Set<SoulDirectSignals.Face> faces = new HashSet<>();
+        for (List<DirectTarget> list : directTargets.values()) {
+            for (DirectTarget t : list) {
+                faces.add(SoulDirectSignals.Face.of(worldPosition.offset(t.offset()), t.face()));
+            }
+        }
+        SoulDirectSignals.setBindings(level, worldPosition, faces);
     }
 
     public void clearSlot(CommandRole role) {
@@ -1230,12 +1264,14 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     @Override
     public void setRemoved() {
         deactivateAll();
+        if (level != null) SoulDirectSignals.clearBindings(level, worldPosition);
         super.setRemoved();
     }
 
     @Override
     public void onChunkUnloaded() {
         deactivateAll();
+        if (level != null) SoulDirectSignals.clearBindings(level, worldPosition);
         super.onChunkUnloaded();
     }
 
@@ -1453,6 +1489,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
                     new BlockPos(e.getInt("X"), e.getInt("Y"), e.getInt("Z")),
                     Direction.from3DDataValue(e.getByte("Face"))));
         }
+        syncBindings();
     }
 
     private void loadSlotsFromTag(CompoundTag tag, HolderLookup.Provider registries) {
@@ -1588,6 +1625,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     @Override
     public void onLoad() {
         super.onLoad();
+        syncBindings();
         // Намеренно НЕ сбрасываем schematicBackup здесь.
         // onLoad() вызывается между двумя loadAdditional при деплое схематики,
         // резерв должен дожить до второго loadAdditional и до writeSafeNbt().

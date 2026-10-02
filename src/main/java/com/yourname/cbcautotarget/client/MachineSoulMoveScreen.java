@@ -81,7 +81,7 @@ public class MachineSoulMoveScreen extends BaseMachineSoulScreen<MachineSoulMove
         if (button == 0) {
             for (int r = 0; r < 6; r++) {
                 if (isPlusHovered(r, (int) mx, (int) my)) {
-                    PacketDistributor.sendToServer(new BeginSoulDirectBindPacket(blockPos, r));
+                    PacketDistributor.sendToServer(new BeginSoulDirectBindPacket(blockPos, MachineSoulMoveMenu.MOVE_ROLES[r].ordinal()));
                     onClose();
                     return true;
                 }
