@@ -1212,9 +1212,27 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         else deactivateSignal(role);
     }
 
+    /** Удаляет привязки, на месте которых в загруженном чанке нет блока (воздух). true — что-то удалено. */
+    private boolean pruneEmptyDirectTargets(CommandRole role, List<DirectTarget> targets, ServerLevel sl) {
+        boolean removed = targets.removeIf(t -> {
+            BlockPos pos = worldPosition.offset(t.offset());
+            return sl.hasChunkAt(pos) && sl.getBlockState(pos).isAir();
+        });
+        if (!removed) return false;
+        if (targets.isEmpty()) directTargets.remove(role);
+        syncBindings();
+        setChanged();
+        sl.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+        return true;
+    }
+
     private void activateDirectTargets(CommandRole role, ServerLevel sl) {
         List<DirectTarget> targets = directTargets.get(role);
         if (targets == null || SoulDirectSignals.isActive(sl, worldPosition, role)) return;
+        if (pruneEmptyDirectTargets(role, targets, sl)) {
+            targets = directTargets.get(role);
+            if (targets == null) return;
+        }
         List<SoulDirectSignals.Face> faces = new ArrayList<>(targets.size());
         for (DirectTarget t : targets) {
             faces.add(SoulDirectSignals.Face.of(worldPosition.offset(t.offset()), t.face()));
