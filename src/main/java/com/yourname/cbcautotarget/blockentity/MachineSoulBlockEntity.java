@@ -146,7 +146,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     public  static final int    MIN_STAND_STILL_DISTANCE     = 0;
     public  static final int    MAX_STAND_STILL_DISTANCE     = 64;
     private static final int    LINK_SEARCH_RADIUS       = 128;
-    private static final float  YAW_DEADBAND_DEG         = 25f;
+    private static final float  YAW_DEADBAND_DEG         = 1f;
     private static final int    SUBLEVEL_CACHE_INTERVAL  = 40;
 
     /**
@@ -209,10 +209,9 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      * Гироскопическая стабилизация крена (roll) и тангажа (pitch) для
      * физических конструкций Sable — см. {@link #sable$physicsTick}.
      * Держит корабль горизонтально (roll=0, pitch=0), yaw не ограничивается.
-     * Включена по умолчанию, чтобы поведение существующих блоков не
-     * изменилось. Управляется отдельной кнопкой на вкладке NPC.
+     * Выключена по умолчанию (включается кнопкой на вкладке NPC). Управляется отдельной кнопкой на вкладке NPC.
      */
-    private boolean gyroStabilizationActive = true;
+    private boolean gyroStabilizationActive = false;
 
     /**
      * Флаг блокировки редактирования блока («The NPC»).
@@ -260,7 +259,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // массы/формы конкретной конструкции без единого подбираемого вручную
     // коэффициента под каждый корабль. zeta=1.0 — критическое демпфирование
     // (быстрее всего гасит наклон без переброса через вертикаль).
-    private static final double GYRO_OMEGA_TARGET = 1.0;
+    private static final double GYRO_OMEGA_TARGET = 2.0;
     // Мёртвая зона с гистерезисом: стабилизатор молчит, пока наклон меньше
     // ENGAGE (обычные колебания/покачивание не трогаются), включается при
     // сильном крене на бок и работает до возврата ниже RELEASE, после чего
@@ -269,7 +268,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     private static final double GYRO_RELEASE_TILT = Math.toRadians(12.0);
     // Потолок угла ошибки в П-члене: при опрокидывании на бок/вверх дном
     // усилие не растёт дальше этого угла, поэтому нет резких рывков.
-    private static final double GYRO_MAX_ERROR_ANGLE = Math.toRadians(70.0);
+    private static final double GYRO_MAX_ERROR_ANGLE = Math.toRadians(90.0);
     private boolean gyroEngaged = false;
     private static final double GYRO_DAMPING_RATIO = 1.0;
     // Постоянная сглаживания EMA-фильтра возмущения за тик (0..1, доля
@@ -813,7 +812,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // конкретной конструкции — тот же приём, что у Aeroworks
         // (computeGains: kpFull = omega²·inertia, kdFull = 2·zeta·omega·inertia).
         double inertia = (inertiaTensor.m00() + inertiaTensor.m11() + inertiaTensor.m22()) / 3.0;
-        double kp = GYRO_OMEGA_TARGET * GYRO_OMEGA_TARGET * inertia;
+        // Усилие плавно нарастает от порога отпускания до порога включения —
+        // нет рывка в момент срабатывания; при сильном наклоне — полная сила.
+        double ramp = Math.min(1.0, Math.max(0.0, (tilt - GYRO_RELEASE_TILT) / (GYRO_ENGAGE_TILT - GYRO_RELEASE_TILT)));
+        double kp = GYRO_OMEGA_TARGET * GYRO_OMEGA_TARGET * inertia * ramp;
         double kd = 2.0 * GYRO_DAMPING_RATIO * GYRO_OMEGA_TARGET * inertia;
 
         Vector3d restoringImpulseLocal = new Vector3d(errorAxisLocal).mul(kp * timeStep);
@@ -1180,12 +1182,14 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
         // Горизонтальный поворот — только за пределами мёртвой зоны
         if (Math.abs(yawDiff) > YAW_DEADBAND_DEG) {
+            // yaw в формате Minecraft растёт по часовой стрелке: yawDiff > 0 —
+            // цель справа от передней грани (раньше было перепутано).
             if (yawDiff > 0) {
-                setSignalActive(CommandRole.MOVE_LEFT,  true,  sl);
-                setSignalActive(CommandRole.MOVE_RIGHT, false, sl);
-            } else {
                 setSignalActive(CommandRole.MOVE_RIGHT, true,  sl);
                 setSignalActive(CommandRole.MOVE_LEFT,  false, sl);
+            } else {
+                setSignalActive(CommandRole.MOVE_LEFT,  true,  sl);
+                setSignalActive(CommandRole.MOVE_RIGHT, false, sl);
             }
         } else {
             setSignalActive(CommandRole.MOVE_LEFT,  false, sl);
@@ -1616,7 +1620,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             // Отсутствие ключа (старые сохранения/блюпринты без этого поля) → по умолчанию включено.
             targetSearchActive = !tag.contains("SearchActive") || tag.getBoolean("SearchActive");
             requireSubLevel = tag.contains("RequireSubLevel") && tag.getBoolean("RequireSubLevel");
-            gyroStabilizationActive = !tag.contains("GyroStabilization") || tag.getBoolean("GyroStabilization");
+            gyroStabilizationActive = tag.contains("GyroStabilization") && tag.getBoolean("GyroStabilization");
             creativeLocked = tag.contains("CreativeLocked") && tag.getBoolean("CreativeLocked");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
@@ -1651,7 +1655,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             }
             targetSearchActive = !schematicBackup.contains("SearchActive") || schematicBackup.getBoolean("SearchActive");
             requireSubLevel = schematicBackup.contains("RequireSubLevel") && schematicBackup.getBoolean("RequireSubLevel");
-            gyroStabilizationActive = !schematicBackup.contains("GyroStabilization") || schematicBackup.getBoolean("GyroStabilization");
+            gyroStabilizationActive = schematicBackup.contains("GyroStabilization") && schematicBackup.getBoolean("GyroStabilization");
             creativeLocked = schematicBackup.contains("CreativeLocked") && schematicBackup.getBoolean("CreativeLocked");
             targetPlayers = !schematicBackup.contains("TargetPlayers") || schematicBackup.getBoolean("TargetPlayers");
             if (schematicBackup.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
@@ -1760,7 +1764,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             }
             targetSearchActive = !tag.contains("SearchActive") || tag.getBoolean("SearchActive");
             requireSubLevel = tag.contains("RequireSubLevel") && tag.getBoolean("RequireSubLevel");
-            gyroStabilizationActive = !tag.contains("GyroStabilization") || tag.getBoolean("GyroStabilization");
+            gyroStabilizationActive = tag.contains("GyroStabilization") && tag.getBoolean("GyroStabilization");
             creativeLocked = tag.contains("CreativeLocked") && tag.getBoolean("CreativeLocked");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
