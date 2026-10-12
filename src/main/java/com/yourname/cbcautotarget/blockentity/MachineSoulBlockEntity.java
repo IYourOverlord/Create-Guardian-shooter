@@ -260,13 +260,23 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     // массы/формы конкретной конструкции без единого подбираемого вручную
     // коэффициента под каждый корабль. zeta=1.0 — критическое демпфирование
     // (быстрее всего гасит наклон без переброса через вертикаль).
-    private static final double GYRO_OMEGA_TARGET = 1.6;
+    private static final double GYRO_OMEGA_TARGET = 1.0;
+    // Мёртвая зона с гистерезисом: стабилизатор молчит, пока наклон меньше
+    // ENGAGE (обычные колебания/покачивание не трогаются), включается при
+    // сильном крене на бок и работает до возврата ниже RELEASE, после чего
+    // снова отпускает конструкцию. Углы в радианах.
+    private static final double GYRO_ENGAGE_TILT  = Math.toRadians(35.0);
+    private static final double GYRO_RELEASE_TILT = Math.toRadians(12.0);
+    // Потолок угла ошибки в П-члене: при опрокидывании на бок/вверх дном
+    // усилие не растёт дальше этого угла, поэтому нет резких рывков.
+    private static final double GYRO_MAX_ERROR_ANGLE = Math.toRadians(70.0);
+    private boolean gyroEngaged = false;
     private static final double GYRO_DAMPING_RATIO = 1.0;
     // Постоянная сглаживания EMA-фильтра возмущения за тик (0..1, доля
     // "подтягивания" к свежему значению) — аналог gyroscopeFeedForwardSmoothing().
     private static final double GYRO_FEED_FORWARD_SMOOTHING = 0.15;
     // Сила компенсации отфильтрованного возмущения — аналог gyroscopeFeedForwardGain().
-    private static final double GYRO_FEED_FORWARD_GAIN = 1.0;
+    private static final double GYRO_FEED_FORWARD_GAIN = 0.0; // ponytail: отключён — при кувырке принимал гироскопические моменты за возмущение и раскачивал; вернуть 1.0 только для постоянных моментов
     // Потолок скачка "необъяснённого" изменения angVel за тик перед тем как
     // он попадёт в фильтр возмущения — не даёт единичному столкновению или
     // резкому удару мгновенно испортить долгоживущую оценку постоянного
@@ -750,7 +760,30 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // недиагональные члены тензора инерции.
         Vector3d currentUpWorld = orientation.transform(new Vector3d(localUp)).normalize();
         Vector3d errorAxisWorld = new Vector3d(currentUpWorld).cross(worldUp);
+        double sinTilt = errorAxisWorld.length();
+        double tilt = Math.atan2(sinTilt, currentUpWorld.dot(worldUp));
+
+        // Ошибка = ось * УГОЛ (а не sin угла): у cross-вектора длина sin(tilt)
+        // падает до нуля при 180°, и на боку/вверх дном момент почти пропадал.
+        if (sinTilt > GYRO_EPS) {
+            errorAxisWorld.div(sinTilt);
+        } else {
+            // Ровно вверх дном: ось неопределена — берём любую горизонтальную.
+            errorAxisWorld.set(orientation.transform(new Vector3d(1.0, 0.0, 0.0)));
+            errorAxisWorld.y = 0.0;
+            if (errorAxisWorld.lengthSquared() < GYRO_EPS) errorAxisWorld.set(1.0, 0.0, 0.0);
+            errorAxisWorld.normalize();
+        }
+        errorAxisWorld.mul(Math.min(tilt, GYRO_MAX_ERROR_ANGLE));
         Vector3d errorAxisLocal = orientation.transformInverse(new Vector3d(errorAxisWorld));
+
+        // ── Мёртвая зона: корректируем только при реальном опрокидывании ────
+        gyroEngaged = tilt > (gyroEngaged ? GYRO_RELEASE_TILT : GYRO_ENGAGE_TILT);
+        if (!gyroEngaged) {
+            gyroHasObservedTick = false;
+            gyroFilteredDisturbanceLocal.zero();
+            return;
+        }
 
         // ── Feed-forward компенсация постоянного возмущающего момента ───────
         // disturbanceDeltaOmega = фактическое изменение angVel за тик минус
@@ -792,10 +825,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // ортогонален worldUpLocal — восстанавливающий+демпфирующий импульс
         // не должен вносить паразитный момент по yaw (тот же приём, что и у
         // Aeroworks: restoringImpulseLocal.y выводится из x/z и worldUpLocal).
-        double wUpY = worldUpLocal.y;
-        if (Math.abs(wUpY) > 0.001) {
-            restoringImpulseLocal.y = -(restoringImpulseLocal.x * worldUpLocal.x + restoringImpulseLocal.z * worldUpLocal.z) / wUpY;
-        }
+        // Ортогональная проекция вместо деления на worldUpLocal.y: на боку
+        // (y→0) деление давало гигантские импульсы по yaw — конструкцию
+        // раскручивало вокруг вертикали.
+        restoringImpulseLocal.fma(-restoringImpulseLocal.dot(worldUpLocal), worldUpLocal);
 
         // ── Лёгкое демпфирование курсового вращения (yaw НЕ стабилизируется) ──
         double yawDampFraction = Math.min(1.0, GYRO_YAW_DAMPING * timeStep);
@@ -822,7 +855,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         gyroLastAppliedImpulseLocal.set(restoringImpulseLocal);
         gyroHasObservedTick = true;
 
-        double tiltError = Math.atan2(errorAxisWorld.length(), currentUpWorld.dot(worldUp));
+        double tiltError = tilt;
         gyroDebugLog(() -> String.format(Locale.ROOT,
                 "tilt=%.4f yawRate=%.4f inertia=%.3f kp=%.3f kd=%.3f impulse=(%.4f,%.4f,%.4f) disturbance=(%.4f,%.4f,%.4f)",
                 tiltError, yawRate, inertia, kp, kd,
