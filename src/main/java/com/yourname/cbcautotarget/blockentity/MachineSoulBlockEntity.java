@@ -466,6 +466,9 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
 
     public boolean isTargetSearchActive() { return targetSearchActive; }
 
+    /** Был ли редстоун-сигнал на прошлом тике (для срабатывания по заднему фронту). Не сохраняется. */
+    private boolean redstoneWasPowered = false;
+
     /**
      * Включает/выключает поиск цели. При выключении сразу снимаются
      * все активные redstone-link сигналы (движение/огонь).
@@ -595,9 +598,19 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // полностью игнорируется: блок работает только когда находится на
         // Sable sub-level (физической конструкции), независимо от того, в каком
         // положении находится обычная кнопка в GUI.
+        // Редстоун: пока сигнал подан, блок работает (как и раньше). Когда сигнал
+        // пропадает (задний фронт), SEARCH и SHIP переходят в OFF и остаются там,
+        // пока их не включат в GUI.
+        boolean powered = level.hasNeighborSignal(pos);
+        if (!powered && be.redstoneWasPowered) {
+            be.setRequireSubLevel(false);
+            be.setTargetSearchActive(false);
+        }
+        be.redstoneWasPowered = powered;
+
         boolean operational = be.requireSubLevel
                 ? (SableCompat.isAvailable() && be.cachedSubLevel != null)
-                : (be.targetSearchActive || level.hasNeighborSignal(pos));
+                : (be.targetSearchActive || powered);
         if (!operational) {
             be.deactivateAll();
             return;
