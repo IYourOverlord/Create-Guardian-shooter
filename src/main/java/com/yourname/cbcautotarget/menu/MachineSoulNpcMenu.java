@@ -22,6 +22,7 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
     private boolean gyroStabilizationActive;
     private boolean creativeLocked;
     private boolean destroySynaxis;
+    private boolean destroyStructure;
 
     // ── Клиентский конструктор ────────────────────────────────────────────────
     public MachineSoulNpcMenu(int id, Inventory inv, RegistryFriendlyByteBuf buf) {
@@ -35,12 +36,14 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
         // (защита от рассинхрона клиент/сервер при частичном обновлении)
         boolean locked = buf.isReadable() && buf.readBoolean();
         boolean destroySynaxis = buf.isReadable() && buf.readBoolean();
+        boolean destroyStructure = buf.isReadable() && buf.readBoolean();
         MachineSoulBlockEntity dummy = new MachineSoulBlockEntity(
                 ModBlockEntities.MACHINE_SOUL.get(), pos,
                 ModBlocks.MACHINE_SOUL.get().defaultBlockState());
         dummy.setGyroStabilizationActive(gyro);
         dummy.setCreativeLocked(locked);
         dummy.setDestroySynaxis(destroySynaxis);
+        dummy.setDestroyStructure(destroyStructure);
         return dummy;
     }
 
@@ -52,10 +55,14 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
         this.gyroStabilizationActive = be.isGyroStabilizationActive();
         this.creativeLocked = be.isCreativeLocked();
         this.destroySynaxis = be.isDestroySynaxis();
+        this.destroyStructure = be.isDestroyStructure();
     }
 
     public boolean isGyroStabilizationActive() { return gyroStabilizationActive; }
     public void setGyroStabilizationActive(boolean active) { this.gyroStabilizationActive = active; }
+
+    public boolean isDestroyStructure() { return destroyStructure; }
+    public void setDestroyStructure(boolean on) { this.destroyStructure = on; }
 
     public boolean isDestroySynaxis() { return destroySynaxis; }
     public void setDestroySynaxis(boolean on) { this.destroySynaxis = on; }

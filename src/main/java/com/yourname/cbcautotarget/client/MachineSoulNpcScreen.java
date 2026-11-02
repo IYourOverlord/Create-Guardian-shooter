@@ -4,6 +4,7 @@ import com.yourname.cbcautotarget.blockentity.MachineSoulBlockEntity.Tab;
 import com.yourname.cbcautotarget.menu.MachineSoulNpcMenu;
 import com.yourname.cbcautotarget.network.ToggleMachineSoulCreativeLockPacket;
 import com.yourname.cbcautotarget.network.ToggleMachineSoulGyroStabilizationPacket;
+import com.yourname.cbcautotarget.network.ToggleMachineSoulStructureDestroyPacket;
 import com.yourname.cbcautotarget.network.ToggleMachineSoulSynaxisDestroyPacket;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -25,6 +26,7 @@ public class MachineSoulNpcScreen extends BaseMachineSoulScreen<MachineSoulNpcMe
     private static final int TOGGLE_X = 6;
     private static final int SYNAXIS_X = BaseMachineSoulScreen.GUI_W - 6 - TOGGLE_W;
     private static final int SYNAXIS_Y = 79;
+    private static final int STRUCTURE_Y = SYNAXIS_Y + TOGGLE_H + 4;
     private static final int TOGGLE_Y = 134;
     // «The NPC» располагается над STABILIZATION
     private static final int LOCK_Y = TOGGLE_Y - TOGGLE_H - 6;
@@ -32,12 +34,14 @@ public class MachineSoulNpcScreen extends BaseMachineSoulScreen<MachineSoulNpcMe
     private boolean gyroStabilizationActive;
     private boolean creativeLocked;
     private boolean destroySynaxis;
+    private boolean destroyStructure;
 
     public MachineSoulNpcScreen(MachineSoulNpcMenu m, Inventory i, Component t) {
         super(m, i, t, Tab.NPC, m.blockPos, GUI_H);
         this.gyroStabilizationActive = m.isGyroStabilizationActive();
         this.creativeLocked = m.isCreativeLocked();
         this.destroySynaxis = m.isDestroySynaxis();
+        this.destroyStructure = m.isDestroyStructure();
     }
 
     @Override protected int getInvYBase() { return 0; }
@@ -73,6 +77,13 @@ public class MachineSoulNpcScreen extends BaseMachineSoulScreen<MachineSoulNpcMe
                 gyroDisabled
                         ? "Block is locked. Only Creative players can edit."
                         : "When this block is destroyed, destroy all Synaxis blocks on the same structure");
+
+        // Structure Destroy — под Synaxis Destroy
+        drawToggle(g, lx + SYNAXIS_X, ty + STRUCTURE_Y, destroyStructure, "STRUCTURE DESTROY", mx, my,
+                gyroDisabled,
+                gyroDisabled
+                        ? "Block is locked. Only Creative players can edit."
+                        : "When this block is destroyed, destroy the whole structure except whitelisted blocks (chests, barrels)");
     }
 
     private void drawToggle(GuiGraphics g, int x, int y, boolean on, String text,
@@ -116,6 +127,15 @@ public class MachineSoulNpcScreen extends BaseMachineSoulScreen<MachineSoulNpcMe
                 destroySynaxis = !destroySynaxis;
                 menu.setDestroySynaxis(destroySynaxis);
                 PacketDistributor.sendToServer(new ToggleMachineSoulSynaxisDestroyPacket(blockPos));
+                return true;
+            }
+
+            int ex = leftPos + SYNAXIS_X, ey = topPos + STRUCTURE_Y;
+            if (mx >= ex && mx < ex + TOGGLE_W && my >= ey && my < ey + TOGGLE_H) {
+                if (creativeLocked && !creative) return true;
+                destroyStructure = !destroyStructure;
+                menu.setDestroyStructure(destroyStructure);
+                PacketDistributor.sendToServer(new ToggleMachineSoulStructureDestroyPacket(blockPos));
                 return true;
             }
 

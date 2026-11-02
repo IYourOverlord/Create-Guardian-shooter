@@ -232,6 +232,9 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     /** Вкл: при разрушении блока разрушаются все блоки мода synaxis на той же конструкции (Sable SubLevel). */
     private boolean destroySynaxis = false;
 
+    /** Вкл: при разрушении блока разрушается вся конструкция (SubLevel'ы), кроме блоков из тега structure_destroy_whitelist. */
+    private boolean destroyStructure = false;
+
     // ── Гироскоп-контроллер (архитектура по образцу Aeroworks GyroscopeController) ──
     // Состояние стабилизатора хранится ЦЕЛИКОМ в локальной (корабельной)
     // системе координат, как в GyroscopeController.step() у Aeroworks:
@@ -516,6 +519,13 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         if (level != null && !level.isClientSide) {
             level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
         }
+    }
+
+    public boolean isDestroyStructure() { return destroyStructure; }
+
+    public void setDestroyStructure(boolean on) {
+        this.destroyStructure = on;
+        setChanged();
     }
 
     public boolean isDestroySynaxis() { return destroySynaxis; }
@@ -1362,10 +1372,14 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     public void setRemoved() {
         deactivateAll();
         // Блок реально убран (а не выгрузка чанка/перенос BE): состояние в мире уже не Soul.
-        if (destroySynaxis && level instanceof ServerLevel sl && SableCompat.isAvailable()
+        if ((destroyStructure || destroySynaxis) && level instanceof ServerLevel sl && SableCompat.isAvailable()
                 && !sl.getBlockState(worldPosition).is(ModBlocks.MACHINE_SOUL.get())) {
             final BlockPos p = worldPosition;
-            sl.getServer().execute(() -> SableCompat.destroyBlocksOfNamespace(sl, p, "synaxis"));
+            final boolean all = destroyStructure; // вся конструкция — надмножество synaxis
+            sl.getServer().execute(() -> {
+                if (all) SableCompat.destroyStructure(sl, p);
+                else SableCompat.destroyBlocksOfNamespace(sl, p, "synaxis");
+            });
         }
         if (level != null) SoulDirectSignals.clearBindings(level, worldPosition);
         super.setRemoved();
@@ -1541,6 +1555,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putBoolean("GyroStabilization", gyroStabilizationActive);
         tag.putBoolean("CreativeLocked", creativeLocked);
         tag.putBoolean("DestroySynaxis", destroySynaxis);
+        tag.putBoolean("DestroyStructure", destroyStructure);
         // Таргетинг игроков сохраняется как есть (не форсируется).
         tag.putBoolean("TargetPlayers", targetPlayers);
         // Фильтр игроков (вайтлист).
@@ -1636,6 +1651,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putBoolean("GyroStabilization", gyroStabilizationActive);
         tag.putBoolean("CreativeLocked", creativeLocked);
         tag.putBoolean("DestroySynaxis", destroySynaxis);
+        tag.putBoolean("DestroyStructure", destroyStructure);
         tag.putBoolean("TargetPlayers", targetPlayers);
         {
             CompoundTag pf = new CompoundTag();
@@ -1683,6 +1699,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             gyroStabilizationActive = tag.contains("GyroStabilization") && tag.getBoolean("GyroStabilization");
             creativeLocked = tag.contains("CreativeLocked") && tag.getBoolean("CreativeLocked");
             destroySynaxis = tag.contains("DestroySynaxis") && tag.getBoolean("DestroySynaxis");
+            destroyStructure = tag.contains("DestroyStructure") && tag.getBoolean("DestroyStructure");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = tag.getCompound("PlayerFilter");
@@ -1725,6 +1742,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             gyroStabilizationActive = schematicBackup.contains("GyroStabilization") && schematicBackup.getBoolean("GyroStabilization");
             creativeLocked = schematicBackup.contains("CreativeLocked") && schematicBackup.getBoolean("CreativeLocked");
             destroySynaxis = schematicBackup.contains("DestroySynaxis") && schematicBackup.getBoolean("DestroySynaxis");
+            destroyStructure = schematicBackup.contains("DestroyStructure") && schematicBackup.getBoolean("DestroyStructure");
             targetPlayers = !schematicBackup.contains("TargetPlayers") || schematicBackup.getBoolean("TargetPlayers");
             if (schematicBackup.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = schematicBackup.getCompound("PlayerFilter");
@@ -1771,6 +1789,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putBoolean("RequireSubLevel", requireSubLevel);
         tag.putBoolean("CreativeLocked", creativeLocked);
         tag.putBoolean("DestroySynaxis", destroySynaxis);
+        tag.putBoolean("DestroyStructure", destroyStructure);
         tag.putBoolean("TargetPlayers", targetPlayers);
         {
             CompoundTag pf = new CompoundTag();
@@ -1844,6 +1863,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             gyroStabilizationActive = tag.contains("GyroStabilization") && tag.getBoolean("GyroStabilization");
             creativeLocked = tag.contains("CreativeLocked") && tag.getBoolean("CreativeLocked");
             destroySynaxis = tag.contains("DestroySynaxis") && tag.getBoolean("DestroySynaxis");
+            destroyStructure = tag.contains("DestroyStructure") && tag.getBoolean("DestroyStructure");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = tag.getCompound("PlayerFilter");

@@ -65,11 +65,26 @@ public final class SableCompat {
      * конструкций — растянуть по тикам.
      */
     public static int destroyBlocksOfNamespace(ServerLevel level, BlockPos soulPos, String namespace) {
+        java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> ns = st ->
+                namespace.equals(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(st.getBlock()).getNamespace());
+        return destroyLinked(level, soulPos, ns, ns);
+    }
+
+    /** Разрушает всю конструкцию Soul (все связанные SubLevel'ы), кроме блоков из тега {@code structure_destroy_whitelist}. */
+    public static int destroyStructure(ServerLevel level, BlockPos soulPos) {
+        return destroyLinked(level, soulPos,
+                st -> !st.isAir() && !st.is(com.yourname.cbcautotarget.CBCAutoTargetTags.STRUCTURE_DESTROY_WHITELIST),
+                st -> "synaxis".equals(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(st.getBlock()).getNamespace()));
+    }
+
+    /** {@code destroy} — что разрушать; {@code link} — блоки, чей NBT определяет связи между SubLevel'ами. */
+    private static int destroyLinked(ServerLevel level, BlockPos soulPos,
+            java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> destroy,
+            java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> link) {
         ServerSubLevel start = getSubLevelForBlock(level, soulPos);
         ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
         if (start == null || container == null) return 0;
-        java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> match = st ->
-                namespace.equals(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(st.getBlock()).getNamespace());
+        java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> match = destroy.or(link);
 
         java.util.Map<java.util.UUID, java.util.List<BlockPos>> found = new java.util.HashMap<>();
         java.util.Map<java.util.UUID, java.util.Set<java.util.UUID>> refs = new java.util.HashMap<>();
@@ -86,7 +101,9 @@ public final class SableCompat {
                     for (int x = 0; x < 16; x++) for (int y = 0; y < 16; y++) for (int z = 0; z < 16; z++) {
                         if (!match.test(sections[i].getBlockState(x, y, z))) continue;
                         BlockPos p = new BlockPos(chunk.getPos().getMinBlockX() + x, baseY + y, chunk.getPos().getMinBlockZ() + z);
-                        list.add(p);
+                        net.minecraft.world.level.block.state.BlockState st = sections[i].getBlockState(x, y, z);
+                        if (destroy.test(st)) list.add(p);
+                        if (!link.test(st)) continue;
                         BlockEntity be = chunk.getBlockEntity(p);
                         if (be != null) collectUuids(be.saveWithFullMetadata(level.registryAccess()), ids);
                     }
@@ -116,11 +133,12 @@ public final class SableCompat {
         int count = 0;
         for (java.util.UUID id : reached) {
             for (BlockPos p : found.getOrDefault(id, java.util.List.of())) {
+                level.removeBlockEntity(p); // иначе onRemove контейнеров (воронки, печи…) выбросит содержимое
                 level.destroyBlock(p, false); // false — без выпадения предметов
                 count++;
             }
         }
-        LOGGER.info("[destroyBlocksOfNamespace] {} blocks '{}' destroyed in {} linked SubLevel(s)", count, namespace, reached.size());
+        LOGGER.info("[destroyLinked] {} blocks destroyed in {} linked SubLevel(s)", count, reached.size());
         return count;
     }
 

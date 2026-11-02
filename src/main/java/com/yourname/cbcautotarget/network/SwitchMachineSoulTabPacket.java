@@ -132,6 +132,7 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
             buf.writeBoolean(soul.isGyroStabilizationActive());
             buf.writeBoolean(soul.isCreativeLocked());
             buf.writeBoolean(soul.isDestroySynaxis());
+            buf.writeBoolean(soul.isDestroyStructure());
         });
     }
 
