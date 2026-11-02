@@ -14,16 +14,19 @@ import net.neoforged.neoforge.network.PacketDistributor;
 /** Vision: three editable numeric fields and compact controls around the guardian. */
 public class MachineSoulVisionScreen extends BaseMachineSoulScreen<MachineSoulVisionMenu> {
     private static final int GUI_H=155;
-    private EditBox radius, keep, still;
+    private EditBox radius, keep, still, stopFov, attackFov;
     private int selected=-1;
     public MachineSoulVisionScreen(MachineSoulVisionMenu m, Inventory i, Component t){super(m,i,t,Tab.VISION,m.blockPos,GUI_H);}
     @Override protected int getInvYBase(){return 0;}
     @Override protected boolean isInventoryHidden(){return true;}
     @Override protected void renderSlot(GuiGraphics g, Slot s){}
-    @Override protected void init(){super.init(); radius=make("Radius",menu.getDetectionRadius(),220,40);keep=make("Keep",menu.getKeepDistance(),220,76);still=make("Still",menu.getStandStillDistance(),220,112);addRenderableWidget(radius);addRenderableWidget(keep);addRenderableWidget(still);}
-    private EditBox make(String label,int value,int x,int y){EditBox b=new EditBox(font,leftPos+x,topPos+y,58,17,Component.literal(label));b.setValue(Integer.toString(value));b.setFilter(v->v.isEmpty()||v.matches("\\d{0,3}"));b.setTooltip(net.minecraft.client.gui.components.Tooltip.create(Component.literal(label+" distance in blocks")));return b;}
+    @Override protected void init(){super.init(); radius=make("Radius",menu.getDetectionRadius(),220,40);keep=make("Keep",menu.getKeepDistance(),220,76);still=make("Still",menu.getStandStillDistance(),220,112);stopFov=make("Stop FOV",menu.getStopFov(),22,40,"Turning stops when the target is within this angle (max 90)");attackFov=make("Attack FOV",menu.getAttackFov(),22,76,"Attack FOV angle in degrees (max 90)");addRenderableWidget(stopFov);addRenderableWidget(attackFov);addRenderableWidget(radius);addRenderableWidget(keep);addRenderableWidget(still);}
+    private EditBox make(String label,int value,int x,int y){return make(label,value,x,y,label+" distance in blocks");}
+    private EditBox make(String label,int value,int x,int y,String tip){EditBox b=new EditBox(font,leftPos+x,topPos+y,58,17,Component.literal(label));b.setValue(Integer.toString(value));b.setFilter(v->v.isEmpty()||v.matches("\\d{0,3}"));b.setTooltip(net.minecraft.client.gui.components.Tooltip.create(Component.literal(tip)));return b;}
     @Override protected void renderContent(GuiGraphics g,int lx,int ty,int mx,int my){
         drawSaveButton(g,lx,ty,mx,my);
+        g.drawString(font,"Stop FOV \u00b0",lx+22,ty+29,COL_TEXT_DIM,false);
+        g.drawString(font,"Attack FOV \u00b0",lx+22,ty+65,COL_TEXT_DIM,false);
         g.drawString(font,"Radius",lx+220,ty+29,COL_TEXT_DIM,false);
         g.drawString(font,"Keep distance",lx+220,ty+65,COL_TEXT_DIM,false);
         g.drawString(font,"Stand still",lx+220,ty+101,COL_TEXT_DIM,false);
@@ -40,5 +43,5 @@ public class MachineSoulVisionScreen extends BaseMachineSoulScreen<MachineSoulVi
     }
     private boolean hit(double x,double y,int bx,int by){return x>=leftPos+bx&&x<leftPos+bx+64&&y>=topPos+by&&y<topPos+by+22;}
     private int val(EditBox b,int lo,int hi,int fallback){try{return Math.max(lo,Math.min(hi,Integer.parseInt(b.getValue())));}catch(Exception e){return fallback;}}
-    @Override protected boolean onSaveClicked(){int r=val(radius,MachineSoulBlockEntity.MIN_DETECTION_RADIUS,MachineSoulBlockEntity.MAX_DETECTION_RADIUS,menu.getDetectionRadius());int k=val(keep,MachineSoulBlockEntity.MIN_KEEP_DISTANCE,MachineSoulBlockEntity.MAX_KEEP_DISTANCE,menu.getKeepDistance());int s=val(still,MachineSoulBlockEntity.MIN_STAND_STILL_DISTANCE,MachineSoulBlockEntity.MAX_STAND_STILL_DISTANCE,menu.getStandStillDistance());PacketDistributor.sendToServer(new SaveMachineSoulVisionPacket(blockPos,r,k,s));onClose();return true;}
+    @Override protected boolean onSaveClicked(){int r=val(radius,MachineSoulBlockEntity.MIN_DETECTION_RADIUS,MachineSoulBlockEntity.MAX_DETECTION_RADIUS,menu.getDetectionRadius());int k=val(keep,MachineSoulBlockEntity.MIN_KEEP_DISTANCE,MachineSoulBlockEntity.MAX_KEEP_DISTANCE,menu.getKeepDistance());int s=val(still,MachineSoulBlockEntity.MIN_STAND_STILL_DISTANCE,MachineSoulBlockEntity.MAX_STAND_STILL_DISTANCE,menu.getStandStillDistance());PacketDistributor.sendToServer(new SaveMachineSoulVisionPacket(blockPos,r,k,s,val(stopFov,MachineSoulBlockEntity.MIN_FOV_DEG,MachineSoulBlockEntity.MAX_FOV_DEG,menu.getStopFov()),val(attackFov,MachineSoulBlockEntity.MIN_FOV_DEG,MachineSoulBlockEntity.MAX_FOV_DEG,menu.getAttackFov())));onClose();return true;}
 }

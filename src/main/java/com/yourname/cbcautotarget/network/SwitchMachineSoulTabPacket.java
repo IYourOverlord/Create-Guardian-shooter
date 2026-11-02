@@ -69,6 +69,8 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
             buf.writeInt(soul.getDetectionRadius());
             buf.writeInt(soul.getKeepDistance());
             buf.writeInt(soul.getStandStillDistance());
+            buf.writeInt(soul.getStopFov());
+            buf.writeInt(soul.getAttackFov());
         });
     }
 
@@ -129,6 +131,7 @@ public record SwitchMachineSoulTabPacket(BlockPos pos, Tab targetTab) implements
             buf.writeBlockPos(soul.getBlockPos());
             buf.writeBoolean(soul.isGyroStabilizationActive());
             buf.writeBoolean(soul.isCreativeLocked());
+            buf.writeBoolean(soul.isDestroySynaxis());
         });
     }
 

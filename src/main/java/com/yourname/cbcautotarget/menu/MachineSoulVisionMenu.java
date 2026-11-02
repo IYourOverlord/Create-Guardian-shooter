@@ -23,6 +23,7 @@ public class MachineSoulVisionMenu extends AbstractContainerMenu {
     private int detectionRadius;
     private int keepDistance;
     private int standStillDistance;
+    private int stopFov, attackFov;
 
     public static final int INV_X      = 8;
     public static final int INV_Y_BASE = 160;  // компактный layout, см. MachineSoulVisionScreen
@@ -37,12 +38,15 @@ public class MachineSoulVisionMenu extends AbstractContainerMenu {
         int radius          = buf.readInt();
         int keepDist        = buf.readInt();
         int standStill      = buf.readInt();
+        int stopFov         = buf.readInt();
+        int attackFov       = buf.readInt();
         MachineSoulBlockEntity dummy = new MachineSoulBlockEntity(
                 ModBlockEntities.MACHINE_SOUL.get(), pos,
                 ModBlocks.MACHINE_SOUL.get().defaultBlockState());
         dummy.setDetectionRadius(radius);
         dummy.setKeepDistance(keepDist);
         dummy.setStandStillDistance(standStill);
+        dummy.setFov(stopFov, attackFov);
         return dummy;
     }
 
@@ -54,6 +58,8 @@ public class MachineSoulVisionMenu extends AbstractContainerMenu {
         this.detectionRadius   = be.getDetectionRadius();
         this.keepDistance      = be.getKeepDistance();
         this.standStillDistance = be.getStandStillDistance();
+        this.stopFov           = be.getStopFov();
+        this.attackFov         = be.getAttackFov();
     }
 
     private void addPlayerInventory(Inventory inv) {
@@ -69,6 +75,9 @@ public class MachineSoulVisionMenu extends AbstractContainerMenu {
 
     public int getKeepDistance()          { return keepDistance; }
     public void setKeepDistance(int d)    { keepDistance = d; }
+
+    public int getStopFov()   { return stopFov; }
+    public int getAttackFov() { return attackFov; }
 
     public int getStandStillDistance()       { return standStillDistance; }
     public void setStandStillDistance(int d) { standStillDistance = d; }

@@ -11,7 +11,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /** Клиент → Сервер: сохранить настройки вкладки Vision (радиус обнаружения + дистанция удержания). */
-public record SaveMachineSoulVisionPacket(BlockPos pos, int radius, int keepDistance, int standStillDistance) implements CustomPacketPayload {
+public record SaveMachineSoulVisionPacket(BlockPos pos, int radius, int keepDistance, int standStillDistance, int stopFov, int attackFov) implements CustomPacketPayload {
 
     public static final Type<SaveMachineSoulVisionPacket> TYPE =
             new Type<>(ResourceLocation.fromNamespaceAndPath("cbc_autotarget", "save_soul_vision"));
@@ -23,8 +23,10 @@ public record SaveMachineSoulVisionPacket(BlockPos pos, int radius, int keepDist
                         buf.writeInt(p.radius());
                         buf.writeInt(p.keepDistance());
                         buf.writeInt(p.standStillDistance());
+                        buf.writeInt(p.stopFov());
+                        buf.writeInt(p.attackFov());
                     },
-                    buf -> new SaveMachineSoulVisionPacket(buf.readBlockPos(), buf.readInt(), buf.readInt(), buf.readInt())
+                    buf -> new SaveMachineSoulVisionPacket(buf.readBlockPos(), buf.readInt(), buf.readInt(), buf.readInt(), buf.readInt(), buf.readInt())
             );
 
     @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -38,6 +40,7 @@ public record SaveMachineSoulVisionPacket(BlockPos pos, int radius, int keepDist
             soul.setDetectionRadius(pkt.radius());
             soul.setKeepDistance(pkt.keepDistance());
             soul.setStandStillDistance(pkt.standStillDistance());
+            soul.setFov(pkt.stopFov(), pkt.attackFov());
             soul.onPlayerSaved(sp);
         });
     }

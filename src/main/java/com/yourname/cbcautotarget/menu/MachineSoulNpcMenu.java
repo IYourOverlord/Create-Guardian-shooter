@@ -21,6 +21,7 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
     public final BlockPos blockPos;
     private boolean gyroStabilizationActive;
     private boolean creativeLocked;
+    private boolean destroySynaxis;
 
     // ── Клиентский конструктор ────────────────────────────────────────────────
     public MachineSoulNpcMenu(int id, Inventory inv, RegistryFriendlyByteBuf buf) {
@@ -33,11 +34,13 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
         // creativeLocked добавлен в протокол позже — читаем только если байт есть
         // (защита от рассинхрона клиент/сервер при частичном обновлении)
         boolean locked = buf.isReadable() && buf.readBoolean();
+        boolean destroySynaxis = buf.isReadable() && buf.readBoolean();
         MachineSoulBlockEntity dummy = new MachineSoulBlockEntity(
                 ModBlockEntities.MACHINE_SOUL.get(), pos,
                 ModBlocks.MACHINE_SOUL.get().defaultBlockState());
         dummy.setGyroStabilizationActive(gyro);
         dummy.setCreativeLocked(locked);
+        dummy.setDestroySynaxis(destroySynaxis);
         return dummy;
     }
 
@@ -48,10 +51,14 @@ public class MachineSoulNpcMenu extends AbstractContainerMenu {
         this.blockPos    = be.getBlockPos();
         this.gyroStabilizationActive = be.isGyroStabilizationActive();
         this.creativeLocked = be.isCreativeLocked();
+        this.destroySynaxis = be.isDestroySynaxis();
     }
 
     public boolean isGyroStabilizationActive() { return gyroStabilizationActive; }
     public void setGyroStabilizationActive(boolean active) { this.gyroStabilizationActive = active; }
+
+    public boolean isDestroySynaxis() { return destroySynaxis; }
+    public void setDestroySynaxis(boolean on) { this.destroySynaxis = on; }
 
     public boolean isCreativeLocked() { return creativeLocked; }
     public void setCreativeLocked(boolean locked) { this.creativeLocked = locked; }

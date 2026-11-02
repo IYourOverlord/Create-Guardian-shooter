@@ -4,6 +4,7 @@ import com.simibubi.create.Create;
 import com.simibubi.create.content.redstone.link.IRedstoneLinkable;
 import com.simibubi.create.content.redstone.link.RedstoneLinkNetworkHandler.Frequency;
 import com.yourname.cbcautotarget.block.MachineSoulBlock;
+import com.yourname.cbcautotarget.ModBlocks;
 import com.yourname.cbcautotarget.compat.SableCompat;
 import com.yourname.cbcautotarget.filter.CommanderFilterData;
 import com.yourname.cbcautotarget.filter.TargetCategory;
@@ -146,7 +147,6 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     public  static final int    MIN_STAND_STILL_DISTANCE     = 0;
     public  static final int    MAX_STAND_STILL_DISTANCE     = 64;
     private static final int    LINK_SEARCH_RADIUS       = 128;
-    private static final float  YAW_DEADBAND_DEG         = 1f;
     private static final int    SUBLEVEL_CACHE_INTERVAL  = 40;
 
     /**
@@ -154,7 +154,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      * Действие активируется только если цель находится перед блоком в пределах ±90°.
      * Движение (MOVE_*) работает на полные 360° — отдельного ограничения нет.
      */
-    private static final double ACTION_FOV_DEG = 90.0;
+    public  static final int    MIN_FOV_DEG = 1;
+    public  static final int    MAX_FOV_DEG = 90;
+    public  static final int    DEFAULT_STOP_FOV_DEG   = 25;
+    public  static final int    DEFAULT_ATTACK_FOV_DEG = 90;
 
     // ── Состояние ─────────────────────────────────────────────────────────────
 
@@ -186,6 +189,10 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      * 0 — функция отключена.
      */
     private int standStillDistance = DEFAULT_STAND_STILL_DISTANCE;
+
+    /** Угол (±°), в пределах которого блок перестаёт поворачиваться (бывш. YAW_DEADBAND_DEG), и угол обзора для огня. Макс. 90. */
+    private int stopFov   = DEFAULT_STOP_FOV_DEG;
+    private int attackFov = DEFAULT_ATTACK_FOV_DEG;
 
     /**
      * Режим поиска цели. Когда выключен — doScan() ничего не делает и все
@@ -221,6 +228,9 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
      * По умолчанию false (не заблокирован).
      */
     private boolean creativeLocked = false;
+
+    /** Вкл: при разрушении блока разрушаются все блоки мода synaxis на той же конструкции (Sable SubLevel). */
+    private boolean destroySynaxis = false;
 
     // ── Гироскоп-контроллер (архитектура по образцу Aeroworks GyroscopeController) ──
     // Состояние стабилизатора хранится ЦЕЛИКОМ в локальной (корабельной)
@@ -363,6 +373,18 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         }
     }
 
+    public int getStopFov()   { return stopFov; }
+    public int getAttackFov() { return attackFov; }
+
+    public void setFov(int stop, int attack) {
+        this.stopFov   = Math.max(MIN_FOV_DEG, Math.min(MAX_FOV_DEG, stop));
+        this.attackFov = Math.max(MIN_FOV_DEG, Math.min(MAX_FOV_DEG, attack));
+        setChanged();
+        if (level != null && !level.isClientSide) {
+            level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+        }
+    }
+
     public int getStandStillDistance() { return standStillDistance; }
 
     public void setStandStillDistance(int distance) {
@@ -494,6 +516,13 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         if (level != null && !level.isClientSide) {
             level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
         }
+    }
+
+    public boolean isDestroySynaxis() { return destroySynaxis; }
+
+    public void setDestroySynaxis(boolean on) {
+        this.destroySynaxis = on;
+        setChanged();
     }
 
     public boolean isCreativeLocked() { return creativeLocked; }
@@ -1194,7 +1223,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // ── ДВИЖЕНИЕ (360°) ───────────────────────────────────────────────────
 
         // Горизонтальный поворот — только за пределами мёртвой зоны
-        if (Math.abs(yawDiff) > YAW_DEADBAND_DEG) {
+        if (Math.abs(yawDiff) > stopFov) {
             // yaw в формате Minecraft растёт по часовой стрелке: yawDiff > 0 —
             // цель справа от передней грани (раньше было перепутано).
             if (yawDiff > 0) {
@@ -1249,9 +1278,9 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             else                        { setSignalActive(CommandRole.MOVE_UP,   false, sl); setSignalActive(CommandRole.MOVE_DOWN, false, sl); }
         }
 
-        // ── ДЕЙСТВИЕ (±90° от направления блока) ─────────────────────────────
+        // ── ДЕЙСТВИЕ (±attackFov° от направления блока) ─────────────────────────────
         // В режиме FOLLOW (сопровождение союзника) огонь не ведём
-        boolean inActionFov = !followMode && Math.abs(wrapDeg(yawDiff)) <= ACTION_FOV_DEG;
+        boolean inActionFov = !followMode && Math.abs(wrapDeg(yawDiff)) <= attackFov;
         setSignalActive(CommandRole.FIRE, inActionFov, sl);
     }
 
@@ -1332,6 +1361,12 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
     @Override
     public void setRemoved() {
         deactivateAll();
+        // Блок реально убран (а не выгрузка чанка/перенос BE): состояние в мире уже не Soul.
+        if (destroySynaxis && level instanceof ServerLevel sl && SableCompat.isAvailable()
+                && !sl.getBlockState(worldPosition).is(ModBlocks.MACHINE_SOUL.get())) {
+            final BlockPos p = worldPosition;
+            sl.getServer().execute(() -> SableCompat.destroyBlocksOfNamespace(sl, p, "synaxis"));
+        }
         if (level != null) SoulDirectSignals.clearBindings(level, worldPosition);
         super.setRemoved();
     }
@@ -1494,6 +1529,8 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putInt("DetectionRadius", detectionRadius);
         tag.putInt("KeepDistance", keepDistance);
         tag.putInt("StandStillDistance", standStillDistance);
+        tag.putInt("StopFov", stopFov);
+        tag.putInt("AttackFov", attackFov);
         // Принудительно: блок, размещённый из блюпринта тулгана, всегда стартует
         // с включённым поиском цели — независимо от состояния на момент сохранения.
         tag.putBoolean("SearchActive", true);
@@ -1503,6 +1540,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         // Стабилизация сохраняется как есть — настройка поведения, а не активности.
         tag.putBoolean("GyroStabilization", gyroStabilizationActive);
         tag.putBoolean("CreativeLocked", creativeLocked);
+        tag.putBoolean("DestroySynaxis", destroySynaxis);
         // Таргетинг игроков сохраняется как есть (не форсируется).
         tag.putBoolean("TargetPlayers", targetPlayers);
         // Фильтр игроков (вайтлист).
@@ -1591,10 +1629,13 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putInt("DetectionRadius", detectionRadius);
         tag.putInt("KeepDistance", keepDistance);
         tag.putInt("StandStillDistance", standStillDistance);
+        tag.putInt("StopFov", stopFov);
+        tag.putInt("AttackFov", attackFov);
         tag.putBoolean("SearchActive", targetSearchActive);
         tag.putBoolean("RequireSubLevel", requireSubLevel);
         tag.putBoolean("GyroStabilization", gyroStabilizationActive);
         tag.putBoolean("CreativeLocked", creativeLocked);
+        tag.putBoolean("DestroySynaxis", destroySynaxis);
         tag.putBoolean("TargetPlayers", targetPlayers);
         {
             CompoundTag pf = new CompoundTag();
@@ -1630,11 +1671,18 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             if (tag.contains("StandStillDistance")) {
                 standStillDistance = tag.getInt("StandStillDistance");
             }
+            if (tag.contains("StopFov")) {
+                stopFov = Math.max(MIN_FOV_DEG, Math.min(MAX_FOV_DEG, tag.getInt("StopFov")));
+            }
+            if (tag.contains("AttackFov")) {
+                attackFov = Math.max(MIN_FOV_DEG, Math.min(MAX_FOV_DEG, tag.getInt("AttackFov")));
+            }
             // Отсутствие ключа (старые сохранения/блюпринты без этого поля) → по умолчанию включено.
             targetSearchActive = !tag.contains("SearchActive") || tag.getBoolean("SearchActive");
             requireSubLevel = tag.contains("RequireSubLevel") && tag.getBoolean("RequireSubLevel");
             gyroStabilizationActive = tag.contains("GyroStabilization") && tag.getBoolean("GyroStabilization");
             creativeLocked = tag.contains("CreativeLocked") && tag.getBoolean("CreativeLocked");
+            destroySynaxis = tag.contains("DestroySynaxis") && tag.getBoolean("DestroySynaxis");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = tag.getCompound("PlayerFilter");
@@ -1666,10 +1714,17 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             if (schematicBackup.contains("StandStillDistance")) {
                 standStillDistance = schematicBackup.getInt("StandStillDistance");
             }
+            if (schematicBackup.contains("StopFov")) {
+                stopFov = Math.max(MIN_FOV_DEG, Math.min(MAX_FOV_DEG, schematicBackup.getInt("StopFov")));
+            }
+            if (schematicBackup.contains("AttackFov")) {
+                attackFov = Math.max(MIN_FOV_DEG, Math.min(MAX_FOV_DEG, schematicBackup.getInt("AttackFov")));
+            }
             targetSearchActive = !schematicBackup.contains("SearchActive") || schematicBackup.getBoolean("SearchActive");
             requireSubLevel = schematicBackup.contains("RequireSubLevel") && schematicBackup.getBoolean("RequireSubLevel");
             gyroStabilizationActive = schematicBackup.contains("GyroStabilization") && schematicBackup.getBoolean("GyroStabilization");
             creativeLocked = schematicBackup.contains("CreativeLocked") && schematicBackup.getBoolean("CreativeLocked");
+            destroySynaxis = schematicBackup.contains("DestroySynaxis") && schematicBackup.getBoolean("DestroySynaxis");
             targetPlayers = !schematicBackup.contains("TargetPlayers") || schematicBackup.getBoolean("TargetPlayers");
             if (schematicBackup.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = schematicBackup.getCompound("PlayerFilter");
@@ -1706,6 +1761,8 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putInt("DetectionRadius", detectionRadius);
         tag.putInt("KeepDistance", keepDistance);
         tag.putInt("StandStillDistance", standStillDistance);
+        tag.putInt("StopFov", stopFov);
+        tag.putInt("AttackFov", attackFov);
         // Принудительно: при размещении из .nbt-структуры (Create-схематика/принтер)
         // блок стартует с включённым поиском цели — независимо от состояния на
         // момент сохранения. На клиентский GUI это не влияет: статус кнопки
@@ -1713,6 +1770,7 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
         tag.putBoolean("SearchActive", true);
         tag.putBoolean("RequireSubLevel", requireSubLevel);
         tag.putBoolean("CreativeLocked", creativeLocked);
+        tag.putBoolean("DestroySynaxis", destroySynaxis);
         tag.putBoolean("TargetPlayers", targetPlayers);
         {
             CompoundTag pf = new CompoundTag();
@@ -1775,10 +1833,17 @@ public class MachineSoulBlockEntity extends BlockEntity implements MenuProvider,
             if (tag.contains("StandStillDistance")) {
                 standStillDistance = tag.getInt("StandStillDistance");
             }
+            if (tag.contains("StopFov")) {
+                stopFov = Math.max(MIN_FOV_DEG, Math.min(MAX_FOV_DEG, tag.getInt("StopFov")));
+            }
+            if (tag.contains("AttackFov")) {
+                attackFov = Math.max(MIN_FOV_DEG, Math.min(MAX_FOV_DEG, tag.getInt("AttackFov")));
+            }
             targetSearchActive = !tag.contains("SearchActive") || tag.getBoolean("SearchActive");
             requireSubLevel = tag.contains("RequireSubLevel") && tag.getBoolean("RequireSubLevel");
             gyroStabilizationActive = tag.contains("GyroStabilization") && tag.getBoolean("GyroStabilization");
             creativeLocked = tag.contains("CreativeLocked") && tag.getBoolean("CreativeLocked");
+            destroySynaxis = tag.contains("DestroySynaxis") && tag.getBoolean("DestroySynaxis");
             targetPlayers = !tag.contains("TargetPlayers") || tag.getBoolean("TargetPlayers");
             if (tag.contains("PlayerFilter", Tag.TAG_COMPOUND)) {
                 CompoundTag pf = tag.getCompound("PlayerFilter");

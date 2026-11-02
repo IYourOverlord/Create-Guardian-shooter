@@ -44,6 +44,7 @@ Direction client→server (Registered in ModPackets):
 - ToggleMachineSoulSearchPacket
 - ToggleMachineSoulSubLevelOnlyPacket
 - ToggleMachineSoulTargetPlayersPacket
+- ToggleMachineSoulSynaxisDestroyPacket (NPC tab: destroy all synaxis blocks on the same Sable SubLevel when the Soul is destroyed)
 - SwitchMachineSoulTabPacket
 - GoHomeMachineSoulPacket
 - SaveMachineSoulVisionPacket

@@ -43,6 +43,7 @@ public class ModPackets {
 
         // MachineSoul — кнопка "Стабилизация" (гироскоп Sable) на вкладке NPC
         r.playToServer(ToggleMachineSoulGyroStabilizationPacket.TYPE, ToggleMachineSoulGyroStabilizationPacket.CODEC, ToggleMachineSoulGyroStabilizationPacket::handle);
+        r.playToServer(ToggleMachineSoulSynaxisDestroyPacket.TYPE, ToggleMachineSoulSynaxisDestroyPacket.CODEC, ToggleMachineSoulSynaxisDestroyPacket::handle);
 
         // MachineSoul — кнопка "The NPC" (блокировка редактирования, только Creative) на вкладке NPC
         r.playToServer(ToggleMachineSoulCreativeLockPacket.TYPE, ToggleMachineSoulCreativeLockPacket.CODEC, ToggleMachineSoulCreativeLockPacket::handle);

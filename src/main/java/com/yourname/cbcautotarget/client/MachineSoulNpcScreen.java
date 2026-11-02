@@ -4,6 +4,7 @@ import com.yourname.cbcautotarget.blockentity.MachineSoulBlockEntity.Tab;
 import com.yourname.cbcautotarget.menu.MachineSoulNpcMenu;
 import com.yourname.cbcautotarget.network.ToggleMachineSoulCreativeLockPacket;
 import com.yourname.cbcautotarget.network.ToggleMachineSoulGyroStabilizationPacket;
+import com.yourname.cbcautotarget.network.ToggleMachineSoulSynaxisDestroyPacket;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
@@ -19,19 +20,24 @@ import net.neoforged.neoforge.network.PacketDistributor;
  */
 public class MachineSoulNpcScreen extends BaseMachineSoulScreen<MachineSoulNpcMenu> {
     private static final int GUI_H = 165;
-    private static final int TOGGLE_W = 130, TOGGLE_H = 18;
-    private static final int TOGGLE_X = (BaseMachineSoulScreen.GUI_W - TOGGLE_W) / 2;
+    // Страж рисуется в (150, 88), ~±13 px: две кнопки слева (x=6..126), Synaxis справа (x=174..294)
+    private static final int TOGGLE_W = 120, TOGGLE_H = 18;
+    private static final int TOGGLE_X = 6;
+    private static final int SYNAXIS_X = BaseMachineSoulScreen.GUI_W - 6 - TOGGLE_W;
+    private static final int SYNAXIS_Y = 79;
     private static final int TOGGLE_Y = 134;
     // «The NPC» располагается над STABILIZATION
     private static final int LOCK_Y = TOGGLE_Y - TOGGLE_H - 6;
 
     private boolean gyroStabilizationActive;
     private boolean creativeLocked;
+    private boolean destroySynaxis;
 
     public MachineSoulNpcScreen(MachineSoulNpcMenu m, Inventory i, Component t) {
         super(m, i, t, Tab.NPC, m.blockPos, GUI_H);
         this.gyroStabilizationActive = m.isGyroStabilizationActive();
         this.creativeLocked = m.isCreativeLocked();
+        this.destroySynaxis = m.isDestroySynaxis();
     }
 
     @Override protected int getInvYBase() { return 0; }
@@ -60,6 +66,13 @@ public class MachineSoulNpcScreen extends BaseMachineSoulScreen<MachineSoulNpcMe
                 gyroDisabled
                         ? "Block is locked. Only Creative players can edit."
                         : "Sable roll stabilization for physical structures");
+
+        // Synaxis Destroy — справа от стража
+        drawToggle(g, lx + SYNAXIS_X, ty + SYNAXIS_Y, destroySynaxis, "SYNAXIS DESTROY", mx, my,
+                gyroDisabled,
+                gyroDisabled
+                        ? "Block is locked. Only Creative players can edit."
+                        : "When this block is destroyed, destroy all Synaxis blocks on the same structure");
     }
 
     private void drawToggle(GuiGraphics g, int x, int y, boolean on, String text,
@@ -93,6 +106,16 @@ public class MachineSoulNpcScreen extends BaseMachineSoulScreen<MachineSoulNpcMe
                     menu.setCreativeLocked(creativeLocked);
                     PacketDistributor.sendToServer(new ToggleMachineSoulCreativeLockPacket(blockPos));
                 }
+                return true;
+            }
+
+            // Synaxis Destroy — тот же soft-fail, что и у STABILIZATION
+            int dx = leftPos + SYNAXIS_X, dy = topPos + SYNAXIS_Y;
+            if (mx >= dx && mx < dx + TOGGLE_W && my >= dy && my < dy + TOGGLE_H) {
+                if (creativeLocked && !creative) return true;
+                destroySynaxis = !destroySynaxis;
+                menu.setDestroySynaxis(destroySynaxis);
+                PacketDistributor.sendToServer(new ToggleMachineSoulSynaxisDestroyPacket(blockPos));
                 return true;
             }
 
