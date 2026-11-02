@@ -132,13 +132,11 @@ public final class SableCompat {
 
         int count = 0;
         for (java.util.UUID id : reached) {
-            for (BlockPos p : found.getOrDefault(id, java.util.List.of())) {
-                level.removeBlockEntity(p); // иначе onRemove контейнеров (воронки, печи…) выбросит содержимое
-                level.destroyBlock(p, false); // false — без выпадения предметов
-                count++;
-            }
+            java.util.List<BlockPos> list = found.getOrDefault(id, java.util.List.of());
+            com.yourname.cbcautotarget.event.BlockDestroyQueue.add(level, list); // удаление размазано по тикам
+            count += list.size();
         }
-        LOGGER.info("[destroyLinked] {} blocks destroyed in {} linked SubLevel(s)", count, reached.size());
+        LOGGER.info("[destroyLinked] {} blocks queued for destruction in {} linked SubLevel(s)", count, reached.size());
         return count;
     }
 
